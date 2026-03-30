@@ -52,8 +52,12 @@ Users ──[encrypted orders]──> SGX Enclave (TEE)
 |---|---|
 | [Feasibility Analysis (RU)](research/01-feasibility-analysis.md) | XRPL capabilities, architecture options, recommendation |
 | [Feasibility Analysis (EN)](research/01-feasibility-analysis.en.md) | English version |
-| [TEE Perp Mechanics (RU)](research/02-tee-perp-mechanics-design.md) | Margin, funding, liquidation, settlement design |
+| [TEE Perp Mechanics (RU)](research/02-tee-perp-mechanics-design.md) | Margin, funding, liquidation, vaults, settlement design |
 | [TEE Perp Mechanics (EN)](research/02-tee-perp-mechanics-design.en.md) | English version |
+| [Production Architecture (RU)](research/03-production-architecture.md) | HAProxy, public/internal API split, network rules |
+| [Production Architecture (EN)](research/03-production-architecture.en.md) | English version |
+| [Multi-Operator (RU)](research/04-multi-operator-architecture.md) | FROST 2-of-3, sequencer/validator, failover |
+| [Multi-Operator (EN)](research/04-multi-operator-architecture.en.md) | English version |
 
 ## Timeline
 
