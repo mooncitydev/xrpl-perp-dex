@@ -110,16 +110,12 @@ pub async fn auth_middleware(request: Request, next: Next) -> Response {
     let uri = request.uri().path().to_string();
 
     // Public endpoints — no auth required
-    let is_public = matches!(
-        (method.as_str(), uri.as_str()),
-        ("GET", "/v1/openapi.json")
-            | ("GET", _) if uri.starts_with("/v1/markets/")
-    );
-
-    // GET /v1/orders and /v1/account/balance need auth (user-specific data)
-    // POST/DELETE always need auth
-    if is_public && method == "GET" && !uri.contains("/orders") && !uri.contains("/account/") {
-        return next.run(request).await;
+    if method == "GET" {
+        let is_public = uri == "/v1/openapi.json"
+            || uri.starts_with("/v1/markets/");
+        if is_public {
+            return next.run(request).await;
+        }
     }
 
     let headers = request.headers().clone();
