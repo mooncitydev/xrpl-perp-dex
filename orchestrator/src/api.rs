@@ -15,12 +15,13 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderValue, Method, StatusCode},
     response::IntoResponse,
     routing::{delete, get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use tower_http::cors::CorsLayer;
 use tracing::error;
 
 use crate::orderbook::{OrderType, TimeInForce};
@@ -120,6 +121,11 @@ fn parse_tif(s: &str) -> Result<TimeInForce, String> {
 // ── Router ──────────────────────────────────────────────────────
 
 pub fn router(state: Arc<AppState>) -> Router {
+    let cors = CorsLayer::new()
+        .allow_origin("*".parse::<HeaderValue>().unwrap())
+        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
+        .allow_headers(tower_http::cors::Any);
+
     Router::new()
         .route("/v1/orders", post(submit_order))
         .route("/v1/orders", get(get_orders))
@@ -129,7 +135,117 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/markets/{market}/orderbook", get(get_orderbook))
         .route("/v1/markets/{market}/ticker", get(get_ticker))
         .route("/v1/markets/{market}/trades", get(get_trades))
+        .route("/v1/openapi.json", get(openapi_spec))
+        .layer(cors)
         .with_state(state)
+}
+
+/// Serve OpenAPI spec
+async fn openapi_spec() -> impl IntoResponse {
+    let spec = serde_json::json!({
+        "openapi": "3.0.3",
+        "info": {
+            "title": "Perp DEX Trading API",
+            "description": "Perpetual futures DEX on XRPL with TEE (Intel SGX). Settlement in RLUSD.",
+            "version": "0.1.0"
+        },
+        "servers": [
+            {"url": "http://94.130.18.162:3000", "description": "Testnet (Hetzner SGX)"}
+        ],
+        "paths": {
+            "/v1/orders": {
+                "post": {
+                    "summary": "Submit order",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/SubmitOrder"},
+                                "example": {
+                                    "user_id": "rAlice123",
+                                    "side": "buy",
+                                    "type": "limit",
+                                    "price": "0.55000000",
+                                    "size": "100.00000000",
+                                    "leverage": 5,
+                                    "time_in_force": "gtc"
+                                }
+                            }
+                        }
+                    },
+                    "responses": {"200": {"description": "Order result with fills"}}
+                },
+                "get": {
+                    "summary": "Get user's open orders",
+                    "parameters": [{"name": "user_id", "in": "query", "required": true, "schema": {"type": "string"}}],
+                    "responses": {"200": {"description": "List of open orders"}}
+                },
+                "delete": {
+                    "summary": "Cancel all user's orders",
+                    "parameters": [{"name": "user_id", "in": "query", "required": true, "schema": {"type": "string"}}],
+                    "responses": {"200": {"description": "Number cancelled"}}
+                }
+            },
+            "/v1/orders/{order_id}": {
+                "delete": {
+                    "summary": "Cancel order by ID",
+                    "parameters": [{"name": "order_id", "in": "path", "required": true, "schema": {"type": "integer"}}],
+                    "responses": {"200": {"description": "Cancelled order"}}
+                }
+            },
+            "/v1/account/balance": {
+                "get": {
+                    "summary": "Get user balance and positions",
+                    "parameters": [{"name": "user_id", "in": "query", "required": true, "schema": {"type": "string"}}],
+                    "responses": {"200": {"description": "Balance, margin, positions, unrealized PnL"}}
+                }
+            },
+            "/v1/markets/{market}/orderbook": {
+                "get": {
+                    "summary": "Order book depth",
+                    "parameters": [
+                        {"name": "market", "in": "path", "required": true, "schema": {"type": "string"}, "example": "XRP-RLUSD-PERP"},
+                        {"name": "levels", "in": "query", "schema": {"type": "integer", "default": 20}}
+                    ],
+                    "responses": {"200": {"description": "Bids and asks arrays"}}
+                }
+            },
+            "/v1/markets/{market}/ticker": {
+                "get": {
+                    "summary": "Best bid/ask/mid price",
+                    "parameters": [{"name": "market", "in": "path", "required": true, "schema": {"type": "string"}}],
+                    "responses": {"200": {"description": "Ticker data"}}
+                }
+            },
+            "/v1/markets/{market}/trades": {
+                "get": {
+                    "summary": "Recent trades",
+                    "parameters": [{"name": "market", "in": "path", "required": true, "schema": {"type": "string"}}],
+                    "responses": {"200": {"description": "Last 100 trades"}}
+                }
+            }
+        },
+        "components": {
+            "schemas": {
+                "SubmitOrder": {
+                    "type": "object",
+                    "required": ["user_id", "side", "size"],
+                    "properties": {
+                        "user_id": {"type": "string", "description": "XRPL r-address or any unique ID"},
+                        "side": {"type": "string", "enum": ["buy", "sell", "long", "short"]},
+                        "type": {"type": "string", "enum": ["limit", "market"], "default": "limit"},
+                        "price": {"type": "string", "description": "FP8 price (required for limit)", "example": "0.55000000"},
+                        "size": {"type": "string", "description": "FP8 size in XRP", "example": "100.00000000"},
+                        "leverage": {"type": "integer", "default": 1, "minimum": 1, "maximum": 20},
+                        "time_in_force": {"type": "string", "enum": ["gtc", "ioc", "fok"], "default": "gtc"},
+                        "reduce_only": {"type": "boolean", "default": false},
+                        "client_order_id": {"type": "string", "description": "Optional user-defined ID"}
+                    }
+                }
+            }
+        }
+    });
+    (StatusCode::OK, Json(spec))
 }
 
 // ── Handlers ────────────────────────────────────────────────────
