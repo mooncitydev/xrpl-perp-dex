@@ -5,6 +5,7 @@
 //!   2. Background loop — price feeds, deposit monitoring, liquidations, funding
 
 mod api;
+mod auth;
 mod enclave_client;
 mod orderbook;
 mod p2p;

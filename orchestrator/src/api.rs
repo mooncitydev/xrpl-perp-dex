@@ -24,6 +24,8 @@ use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 use tracing::error;
 
+use crate::auth;
+
 use crate::orderbook::{OrderType, TimeInForce};
 use crate::perp_client::PerpClient;
 use crate::trading::TradingEngine;
@@ -136,6 +138,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/markets/{market}/ticker", get(get_ticker))
         .route("/v1/markets/{market}/trades", get(get_trades))
         .route("/v1/openapi.json", get(openapi_spec))
+        .layer(axum::middleware::from_fn(auth::auth_middleware))
         .layer(cors)
         .with_state(state)
 }
@@ -279,9 +282,14 @@ async fn submit_order(
     };
 
     let size = match req.size.parse::<FP8>() {
-        Ok(fp) => fp,
-        Err(_) => return err(StatusCode::BAD_REQUEST, "invalid size").into_response(),
+        Ok(fp) if fp.raw() > 0 => fp,
+        _ => return err(StatusCode::BAD_REQUEST, "invalid or non-positive size").into_response(),
     };
+
+    // Validate leverage (1-20)
+    if req.leverage < 1 || req.leverage > 20 {
+        return err(StatusCode::BAD_REQUEST, "leverage must be 1-20").into_response();
+    }
 
     match state.engine.submit_order(
         req.user_id,
@@ -392,7 +400,7 @@ async fn get_orderbook(
     Path(_market): Path<String>,
     Query(params): Query<DepthQuery>,
 ) -> impl IntoResponse {
-    let levels = params.levels.unwrap_or(20);
+    let levels = params.levels.unwrap_or(20).min(100); // cap at 100
     let (bids, asks) = state.engine.depth(levels).await;
 
     let bids_json: Vec<[String; 2]> = bids.iter()
