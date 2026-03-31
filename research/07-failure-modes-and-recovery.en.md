@@ -276,7 +276,70 @@ Even without Shamir backup:
 
 ---
 
-## 11. Infrastructure Guarantees
+## 11. Threshold Flexibility: Not Just 2-of-3
+
+FROST supports arbitrary t-of-n. Enclave limits: `MAX_FROST_PARTICIPANTS = 16`, `MAX_FROST_GROUPS = 4`.
+
+### Supported Configurations
+
+| Scheme | Operators | To Sign | Tolerated Failures | Signing Latency | Use Case |
+|---|---|---|---|---|---|
+| 2-of-3 | 3 | 2 | 1 | ~300 ms | PoC, small team |
+| 3-of-5 | 5 | 3 | 2 | ~400 ms | Production, good balance |
+| 5-of-9 | 9 | 5 | 4 | ~600 ms | High decentralization |
+| 7-of-11 | 11 | 7 | 4 | ~800 ms | Maximum decentralization |
+| 11-of-16 | 16 | 11 | 5 | ~1.2 sec | Protocol maximum |
+
+### Choosing the Threshold
+
+- **t too low** (e.g., 2-of-9): easy to sign, but easy to collude (2 malicious actors suffice)
+- **t too high** (e.g., 8-of-9): secure against collusion, but 2 operators offline = withdrawals blocked
+- **Recommendation**: t = ⌈n/2⌉ + 1 (simple majority + 1)
+
+| n | Recommended t | Tolerated Failures | Collusion Requires |
+|---|---|---|---|
+| 3 | 2 | 1 | 2 (67%) |
+| 5 | 3 | 2 | 3 (60%) |
+| 7 | 4 | 3 | 4 (57%) |
+| 9 | 5 | 4 | 5 (56%) |
+
+### DKG Latency for Different n
+
+DKG is performed **once** when creating the escrow. Growth with n:
+
+| n | Share Exchanges | DKG Latency | Note |
+|---|---|---|---|
+| 3 | 6 | ~1.4 sec | Current PoC |
+| 5 | 20 | ~4 sec | |
+| 9 | 72 | ~14 sec | |
+| 16 | 240 | ~48 sec | Maximum, one-time operation |
+
+**DKG latency does not affect trading** — it is a one-time setup operation.
+
+### Signing Latency for Different t
+
+Signing latency = t × ~100ms (parallel nonce gen + parallel partial sign + aggregation):
+
+```
+signing_latency ≈ 3 × round_trip_time   (fixed: nonce + sign + aggregate)
+                                          × ceil(t / parallel_capacity)
+```
+
+In practice for t ≤ 16: **< 1.5 sec**, negligible compared to XRPL settlement (3-5 sec).
+
+### Multiple FROST Groups
+
+`MAX_FROST_GROUPS = 4` allows up to 4 independent escrow accounts:
+- Group 0: main escrow (RLUSD collateral)
+- Group 1: insurance fund
+- Group 2: protocol treasury
+- Group 3: reserve
+
+Each group can have its own threshold (e.g., treasury = 3-of-5, trading = 2-of-3).
+
+---
+
+## 12. Infrastructure Guarantees
 
 ### What Is Protected by Hardware (Intel SGX)
 - Private keys (FROST shares) — never leave the enclave
