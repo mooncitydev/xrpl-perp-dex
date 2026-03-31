@@ -18,11 +18,10 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use k256::ecdsa::{signature::Verifier, Signature, VerifyingKey};
+use k256::ecdsa::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
+use ripemd::Ripemd160;
 use sha2::{Digest, Sha256};
 use tracing::warn;
-
-use crate::xrpl_signer::pubkey_to_xrpl_address;
 
 /// Authentication result: verified XRPL address.
 #[derive(Clone, Debug)]
@@ -68,12 +67,25 @@ pub fn verify_request(
     let verifying_key = VerifyingKey::from_sec1_bytes(&pubkey_bytes)
         .map_err(|_| "invalid secp256k1 public key")?;
 
-    // Verify pubkey → address derivation
-    let uncompressed_point = verifying_key.to_encoded_point(false);
-    let uncompressed_bytes = uncompressed_point.as_bytes();
-    let uncompressed_hex = hex::encode(uncompressed_bytes);
-    let derived_address = pubkey_to_xrpl_address(&uncompressed_hex)
-        .map_err(|e| format!("address derivation failed: {}", e))?;
+    // Verify pubkey → XRPL address derivation
+    // XRPL: SHA-256(compressed_pubkey) → RIPEMD-160 → Base58Check with prefix 0x00
+    let sha256_hash = Sha256::digest(&pubkey_bytes);
+    let ripemd_hash = Ripemd160::digest(&sha256_hash);
+
+    // Base58Check: [0x00] + ripemd_hash + checksum
+    let mut payload = vec![0x00u8];
+    payload.extend_from_slice(&ripemd_hash);
+    let checksum = Sha256::digest(&Sha256::digest(&payload));
+    payload.extend_from_slice(&checksum[..4]);
+
+    // XRPL uses its own Base58 alphabet
+    const XRPL_ALPHABET: &str = "rpshnaf39wBUDNEGHJKLM4PQRST7VWXYZ2bcdeCg65jkm8oFqi1tuvAxyz";
+    let alpha_bytes: &[u8; 58] = XRPL_ALPHABET.as_bytes().try_into()
+        .expect("XRPL alphabet is 58 chars");
+    let alpha = bs58::Alphabet::new(alpha_bytes)
+        .expect("valid alphabet");
+    let derived_address = bs58::encode(&payload).with_alphabet(&alpha).into_string();
+
     if derived_address != address {
         return Err(format!(
             "address mismatch: header={}, derived from pubkey={}",
@@ -94,9 +106,17 @@ pub fn verify_request(
     let signature = Signature::from_der(&sig_bytes)
         .map_err(|_| "invalid DER signature")?;
 
-    verifying_key
-        .verify(&hash, &signature)
-        .map_err(|_| "signature verification failed")?;
+    // Verify ECDSA signature over pre-hashed data (SHA-256 already computed)
+    if let Err(e) = verifying_key.verify_prehash(&hash, &signature) {
+        tracing::debug!(
+            hash_hex = %hex::encode(&hash),
+            sig_hex = %sig_hex,
+            pubkey_hex = %pubkey_hex,
+            err = %e,
+            "signature verification details"
+        );
+        return Err("signature verification failed".into());
+    }
 
     Ok(AuthenticatedUser {
         xrpl_address: address.to_string(),
