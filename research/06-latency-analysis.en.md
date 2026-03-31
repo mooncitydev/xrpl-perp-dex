@@ -1,6 +1,6 @@
 # Latency Analysis: Perp DEX on XRPL with SGX
 
-**Configuration**: 3 SGX servers (1 Hetzner + 2 Azure DCsv3), FROST 2-of-3
+**Configuration**: 3 SGX servers (1 Hetzner + 2 Azure DCsv3), XRPL native multisig 2-of-3 (SignerListSet)
 **Transport**: HTTPS between operators, SGX enclave on each node
 
 ---
@@ -70,23 +70,20 @@ XRPL finality                              3-5 sec
 Total:                                     ~4-6 sec
 ```
 
-### Withdrawal (FROST 2-of-3, multi-operator)
+### Withdrawal (XRPL multisig 2-of-3, multi-operator)
 
 ```
-Orchestrator → Enclave A: nonce_gen        ~100 ms  ┐
-Orchestrator → Enclave B: nonce_gen        ~100 ms  ┤ PARALLEL
+Orchestrator → Enclave A: ECDSA sign       ~100 ms  ┐
+Orchestrator → Enclave B: ECDSA sign       ~100 ms  ┤ PARALLEL
                                                     ┘
-Orchestrator → Enclave A: partial_sign     ~100 ms  ┐
-Orchestrator → Enclave B: partial_sign     ~100 ms  ┤ PARALLEL
-                                                    ┘
-Coordinator: sig_agg                       ~100 ms
-Orchestrator → XRPL: submit tx            ~200-500 ms
+Orchestrator: assemble Signers array       <1 ms
+Orchestrator → XRPL: submit multisig tx   ~200-500 ms
 XRPL finality                              3-5 sec
                                            ─────────
 Total:                                     ~4-6 sec
 ```
 
-FROST adds ~300 ms to withdrawal — negligible compared to XRPL finality.
+Multisig signing adds ~100 ms to withdrawal — negligible compared to XRPL finality.
 
 ### Liquidation (event-driven)
 
@@ -95,7 +92,7 @@ Orchestrator: price update                 every 5 sec
 Orchestrator → Enclave: check_liquidations ~5 ms
 Enclave: scan all positions                <1 ms (up to 200 positions)
 Orchestrator → Enclave: liquidate          ~5 ms
-If FROST withdrawal needed:                +300 ms
+If multisig withdrawal needed:             +100 ms
                                            ─────────
 Total:                                     ~5-10 sec (from price change)
 ```
@@ -113,18 +110,18 @@ Total:                                     ~50 ms
 
 Negligible — runs 3 times per day.
 
-### DKG — Distributed Key Generation (one-time during setup)
+### ECDSA Key Generation + SignerListSet (one-time during setup)
 
 ```
-Round 1: 3 polynomial generations          PARALLEL  ~100 ms
-Round 1: 6 share exports (sealed)          SEQUENTIAL ~600 ms
-Round 2: 6 share imports + VSS verify      SEQUENTIAL ~600 ms
-Finalize: 3 aggregations                   PARALLEL  ~100 ms
+3 instances generate ECDSA keypair         PARALLEL  ~10 ms
+Orchestrator: SignerListSet tx on escrow   ~200-500 ms
+Orchestrator: DisableMasterKey tx          ~200-500 ms
+XRPL finality (2 tx)                       ~6-10 sec
                                                      ─────────
-Total:                                               ~1.4 sec
+Total:                                               ~7-11 sec
 ```
 
-Runs once when creating the escrow account.
+Each instance generates an independent ECDSA key (secp256k1). The orchestrator configures SignerListSet with quorum=2 on the escrow account.
 
 ### State Save (every 5 minutes)
 
@@ -173,7 +170,7 @@ Total:                                     ~15 ms
 | Withdrawal | Medium | ~4-6 sec | Faster than CEX |
 | Liquidation | Rare | ~5-10 sec | Risk: deep loss. Mitigation: insurance fund |
 | Funding | 3 times/day | ~50 ms | Zero impact |
-| DKG setup | One-time | ~1.4 sec | Zero impact |
-| FROST signing | On withdrawal | ~300 ms | Negligible compared to XRPL finality |
+| Key gen + SignerListSet | One-time | ~7-11 sec | Zero impact |
+| Multisig signing (2 ECDSA) | On withdrawal | ~100 ms | Negligible compared to XRPL finality |
 
-**Conclusion: multi-machine FROST signing latency (~300 ms) and enclave computation (~5-10 ms) are negligible compared to XRPL settlement (3-5 sec). The system is production-ready in terms of latency.**
+**Conclusion: multi-machine multisig signing latency (~100 ms) and enclave computation (~5-10 ms) are negligible compared to XRPL settlement (3-5 sec). The system is production-ready in terms of latency.**

@@ -2,7 +2,9 @@
 
 **Date:** 2026-03-30
 **Status:** Design
-**Dependency:** FROST 2-of-3 (already implemented in enclave)
+**Dependency:** XRPL native multisig (SignerListSet) + ECDSA keys in enclave
+
+> **Note on signing:** XRPL uses ECDSA (secp256k1), not Schnorr. Threshold signing on XRPL is achieved via native SignerListSet (multi-signature), not FROST. Each SGX instance holds an independent ECDSA key. The enclave also supports FROST for Bitcoin Taproot operations.
 
 ---
 
@@ -24,7 +26,7 @@ Single operator = single point of failure:
 │                  │     │                  │     │                  │
 │ ┌──────────────┐ │     │ ┌──────────────┐ │     │ ┌──────────────┐ │
 │ │SGX Enclave   │ │     │ │SGX Enclave   │ │     │ │SGX Enclave   │ │
-│ │FROST Share 1 │ │     │ │FROST Share 2 │ │     │ │FROST Share 3 │ │
+│ │ECDSA Key A   │ │     │ │ECDSA Key B   │ │     │ │ECDSA Key C   │ │
 │ └──────────────┘ │     │ └──────────────┘ │     │ └──────────────┘ │
 │ ┌──────────────┐ │     │ ┌──────────────┐ │     │ ┌──────────────┐ │
 │ │Orchestrator  │ │     │ │Orchestrator  │ │     │ │Orchestrator  │ │
@@ -41,7 +43,7 @@ Single operator = single point of failure:
                                   ▼
                             XRPL Mainnet
                           (escrow account)
-                      group key = FROST 2-of-3
+                 SignerListSet: [rA, rB, rC], quorum=2
 ```
 
 ---
@@ -54,13 +56,13 @@ Single operator = single point of failure:
 - Builds authoritative state (positions, balances)
 - Determines transaction ordering
 - Broadcasts state updates to validators
-- Initiates FROST signing rounds for withdrawals
+- Initiates multisig signing for withdrawals (collects 2 ECDSA signatures)
 
 ### Validators (2 operators)
 
 - Receive state updates from the sequencer
 - Verify correctness (margin checks, PnL calculations)
-- Participate in FROST signing (2-of-3 for withdrawals)
+- Participate in multisig signing (2-of-3 ECDSA signatures for withdrawals)
 - Can refuse to sign if state is incorrect
 - If sequencer fails → one of the validators becomes the sequencer (failover)
 
@@ -89,27 +91,23 @@ Sequencer                    Validator B              Validator C
 
 Validators replay operations deterministically and verify the state hash.
 
-### 2. FROST Withdrawal Signing
+### 2. Multisig Withdrawal Signing (XRPL SignerListSet)
 
 ```
 User: "withdraw 50 RLUSD to rXXX"
     │
     ▼
-Sequencer:
+Sequencer (orchestrator):
     1. Margin check → OK
     2. Build XRPL Payment tx
-    3. Compute tx hash (SHA-512Half)
-    4. FROST nonce gen (share 1)
-    5. Request nonces from validators
+    3. Send tx to Enclave A → ECDSA sign (key A)
+    4. Send tx to Enclave B → ECDSA sign (key B)
     │
-    ├──► Validator B: nonce gen (share 2) ──► partial sign
-    ├──► Validator C: nonce gen (share 3) ──► partial sign
-    │
-    6. Aggregate: 2-of-3 partial sigs → final Schnorr sig
-    7. Submit signed tx to XRPL
+    5. Assemble Signers array: [sig_A, sig_B]
+    6. Submit multisig tx to XRPL
 ```
 
-At least 2 of 3 operators must participate. If one is offline, the remaining 2 can still sign.
+At least 2 of 3 operators must sign (quorum=2 in SignerListSet). If one is offline, the remaining 2 can still sign.
 
 ### 3. Price Consensus
 
@@ -130,7 +128,7 @@ Each operator fetches the price independently. The sequencer uses the median of 
 Normal:     A = Sequencer,  B,C = Validators
 A offline:  B = Sequencer,  C = Validator    (A rejoins as Validator)
 B offline:  A = Sequencer,  C = Validator
-A+B offline: C = Sequencer (degraded mode, no FROST signing possible
+A+B offline: C = Sequencer (degraded mode, no multisig possible
                              until at least one more operator rejoins)
 ```
 
@@ -145,12 +143,10 @@ Failover via heartbeat timeout:
 
 | Component | Status | Location |
 |-----------|--------|----------|
-| FROST 2-of-3 keygen | ✅ Done | Enclave: ecall_frost_keygen |
-| FROST DKG (distributed) | ✅ Done | Enclave: ecall_dkg_* |
-| FROST nonce gen | ✅ Done | Enclave: ecall_frost_nonce_gen |
-| FROST partial sign | ✅ Done | Enclave: ecall_frost_partial_sign |
-| FROST sig aggregation | ✅ Done | Enclave: ecall_frost_partial_sig_agg |
-| Sealed share export/import | ✅ Done | Enclave: ecall_frost_share_export/import |
+| ECDSA keypair generation | ✅ Done | Enclave: each instance generates an independent ECDSA key |
+| XRPL SignerListSet setup | ✅ Done | Orchestrator: configures multisig on escrow account |
+| ECDSA signing (secp256k1) | ✅ Done | Enclave: ecall_sign (XRPL transactions) |
+| FROST (for Bitcoin Taproot) | ✅ Done | Enclave: ecall_frost_* / ecall_dkg_* (not for XRPL) |
 | Margin engine | ✅ Done | Enclave: ecall_perp_* |
 | Single-operator orchestrator | ✅ Done | Rust binary |
 
@@ -161,7 +157,7 @@ Failover via heartbeat timeout:
 | P2P gossip | Medium | libp2p or simple TCP mesh for state replication |
 | State batch protocol | Medium | Serialization + batch signing |
 | Sequencer election | Low | Priority-based with heartbeat |
-| FROST signing coordinator | Medium | Orchestrator coordinates nonce exchange + partial signing |
+| Multisig signing coordinator | Medium | Orchestrator collects ECDSA signatures from 2 instances, assembles Signers array |
 | Price consensus | Low | Median from 3 operators |
 | Deterministic state replay | Medium | Validators replay operations and verify hash |
 
@@ -173,7 +169,7 @@ Failover via heartbeat timeout:
 |----------|---------|
 | 1 malicious operator | Cannot steal funds (requires 2-of-3). Can delay signing if they are one of the two. |
 | 1 operator offline | System operates normally (2-of-3 signing, failover). |
-| 2 operators offline | Trading continues on the remaining one (it becomes sequencer), but withdrawals are blocked (need 2 for FROST). |
+| 2 operators offline | Trading continues on the remaining one (it becomes sequencer), but withdrawals are blocked (need 2 ECDSA signatures for multisig). |
 | 2 operators collude | Can sign any withdrawal. Risk: collusion. Mitigation: operators are legally/geographically separated. |
 | All 3 offline | Trading halted. Funds are safe in XRPL escrow. Recovery via Shamir backup keys. |
 
@@ -191,5 +187,5 @@ For maximum decentralization — different providers with SGX:
 
 Each operator:
 - Runs their own enclave with identical MRENCLAVE
-- Holds their own FROST share (sealed, never leaves the enclave)
+- Holds their own independent ECDSA key (sealed, never leaves the enclave)
 - Is verified via remote attestation (users verify MRENCLAVE)

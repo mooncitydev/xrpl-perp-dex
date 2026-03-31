@@ -20,7 +20,7 @@
 │                     │  SGX Enclave Instances  │               │
 │                     │  (perp-dex-server)      │               │
 │                     │  TCSNum=1, single-threaded │            │
-│                     │  FROST 2-of-3 signing   │               │
+│                     │  XRPL multisig 2-of-3   │               │
 │                     └────────────────────────┘               │
 │                          ▲                                    │
 │                          │                                    │
@@ -64,8 +64,8 @@ and distributes them across instances, preventing conflicts.
 | POST | `/v1/perp/state/load` | Load state | Orchestrator |
 | POST | `/v1/pool/generate` | Key generation | Admin |
 | POST | `/v1/pool/sign` | Direct signing | Admin |
-| POST | `/v1/pool/frost/*` | FROST operations | Admin |
-| POST | `/v1/pool/dkg/*` | DKG operations | Admin |
+| POST | `/v1/pool/frost/*` | FROST operations (Bitcoin Taproot, not XRPL) | Admin |
+| POST | `/v1/pool/dkg/*` | DKG operations (Bitcoin Taproot, not XRPL) | Admin |
 
 ---
 
@@ -140,7 +140,7 @@ that a single-threaded enclave does not receive parallel ecalls.
 - 3 instances on ports 9088-9090
 - Each with identical `enclave.signed.so` (same MRENCLAVE)
 - TCSNum=1 (single-threaded per instance)
-- FROST 2-of-3: each instance holds its own share
+- XRPL native multisig (SignerListSet): each instance holds its own independent ECDSA key
 - State sealed to disk (per-instance)
 - Listen on 127.0.0.1 (not directly accessible from outside)
 
@@ -158,10 +158,10 @@ that a single-threaded enclave does not receive parallel ecalls.
 
 ### 4. XRPL Mainnet
 
-- Escrow account controlled by SGX (private key inside enclave)
+- Escrow account controlled by SGX (3 independent ECDSA keys, SignerListSet quorum=2, master key disabled)
 - RLUSD collateral on escrow
 - Deposits: user -> Payment -> escrow -> Orchestrator detects -> enclave credits
-- Withdrawals: user requests -> enclave checks margin -> SGX signs Payment -> XRPL
+- Withdrawals: user requests -> enclave checks margin -> orchestrator collects 2 ECDSA signatures from 2 instances -> assembles Signers array -> submits to XRPL
 
 ---
 

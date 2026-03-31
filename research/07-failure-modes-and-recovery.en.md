@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-31
 **Status:** Design
-**Context:** FROST 2-of-3 DKG, 3 SGX operators, XRPL mainnet settlement
+**Context:** XRPL native multisig 2-of-3 (SignerListSet), 3 SGX operators, XRPL mainnet settlement
 
 ---
 
@@ -12,15 +12,15 @@
 Operator A (Hetzner)     Operator B (Azure)      Operator C (OVH)
 ┌──────────────┐         ┌──────────────┐         ┌──────────────┐
 │ SGX Enclave  │         │ SGX Enclave  │         │ SGX Enclave  │
-│ FROST Share 1│         │ FROST Share 2│         │ FROST Share 3│
+│ ECDSA Key A  │         │ ECDSA Key B  │         │ ECDSA Key C  │
 │ Sealed State │         │ Sealed State │         │ Sealed State │
 └──────────────┘         └──────────────┘         └──────────────┘
 ```
 
-- **Escrow account** on XRPL: group public key = FROST 2-of-3
-- **Signing threshold**: 2 out of 3 operators are sufficient to sign
+- **Escrow account** on XRPL: SignerListSet = [rA, rB, rC], quorum=2, master key disabled
+- **Signing threshold**: 2 out of 3 operators are sufficient for multisig signing
 - **State**: sealed inside each enclave (MRENCLAVE-bound)
-- **Funds**: RLUSD on XRPL mainnet, controlled by group key
+- **Funds**: RLUSD on XRPL mainnet, controlled by SignerListSet multisig
 
 ---
 
@@ -34,7 +34,7 @@ Operator C loses connectivity (server crash, network outage, maintenance).
 |----------|--------|-------------|
 | Trading | ✅ Works | Order book in orchestrator, not in enclave |
 | Deposits | ✅ Works | XRPL monitoring by any live operator |
-| Withdrawals | ✅ Works | FROST 2-of-3: A+B sign without C |
+| Withdrawals | ✅ Works | Multisig 2-of-3: A+B sign without C |
 | Liquidations | ✅ Works | Any live operator executes |
 | Funding | ✅ Works | Any live operator applies |
 | State persistence | ✅ Works | Each instance saves its own state |
@@ -63,7 +63,7 @@ Only Operator A is alive. B and C are unreachable.
 |----------|--------|-------------|
 | Trading | ✅ Works | Order book in orchestrator A |
 | Deposits | ✅ Works | A monitors XRPL |
-| **Withdrawals** | ❌ **Blocked** | FROST requires 2-of-3, A alone cannot sign |
+| **Withdrawals** | ❌ **Blocked** | Multisig requires 2-of-3, A alone cannot sign |
 | Liquidations | ⚠️ Partial | Internal liquidations work, but margin withdrawal does not |
 | Funding | ✅ Works | |
 | State persistence | ✅ Works | |
@@ -94,7 +94,7 @@ All servers are simultaneously unreachable (disaster, coordinated attack, error)
 
 ### Fund Safety
 - **RLUSD on XRPL escrow** — funds are on-chain, not on servers
-- **Nobody can withdraw** — neither operators nor attacker (no 2-of-3 signature)
+- **Nobody can withdraw** — neither operators nor attacker (no 2-of-3 multisig signature)
 - **XRPL ledger** — immutable, funds are publicly visible
 
 ### Recovery
@@ -111,7 +111,7 @@ Operator B attempts to steal funds or manipulate trading.
 ### What B Can Do
 | Action | Possible? | Why |
 |--------|-----------|-----|
-| Steal funds | ❌ No | Requires 2-of-3 FROST signatures, B has only 1 share |
+| Steal funds | ❌ No | Requires 2-of-3 ECDSA signatures (multisig), B has only 1 key |
 | Sign a fake withdrawal | ❌ No | A and C will not sign an invalid transaction |
 | Stop withdrawals | ⚠️ Partially | If B = one of two live operators, can refuse to sign. But A+C still = 2-of-3 |
 | Manipulate price | ⚠️ Limited | If B = sequencer, can delay orders. Mitigation: sequencer rotation |
@@ -128,26 +128,27 @@ Operator B attempts to steal funds or manipulate trading.
 ## 5. SGX Compromise (Side-Channel Attack)
 
 ### Scenario
-Attacker extracts a FROST share from one enclave via a side-channel vulnerability (Spectre, Foreshadow, etc.).
+Attacker extracts an ECDSA key from one enclave via a side-channel vulnerability (Spectre, Foreshadow, etc.).
 
 ### Impact
-- Leak of 1 share out of 3 — **insufficient for signing**
-- Attacker needs 2 shares for FROST 2-of-3
+- Leak of 1 key out of 3 — **insufficient for signing** (need 2-of-3 multisig)
+- Attacker needs 2 keys for multisig 2-of-3
 - Compromise of one SGX does not grant access to funds
 
 ### Actions
 1. Intel releases a microcode update for the vulnerability
 2. Update SGX microcode on the compromised server
 3. Rebuild the enclave (new MRENCLAVE)
-4. **Key rotation**: run new DKG → transfer funds to new escrow
-5. Old shares are useless after key rotation
+4. **Key rotation**: each instance generates a new ECDSA keypair -> update SignerListSet -> transfer funds to new escrow
+5. Old keys are useless after key rotation
 
 ### Key Rotation Protocol
 ```
-1. All 3 operators run new DKG → new group_pubkey → new XRPL address
-2. Sign XRPL Payment: old escrow → new escrow (all RLUSD)
-3. Update configuration
-4. Old shares can be safely deleted
+1. All 3 instances generate new ECDSA keypairs → new XRPL addresses (rA', rB', rC')
+2. Create new escrow account with SignerListSet: [rA', rB', rC'], quorum=2
+3. Multisig signing (2-of-3): transfer RLUSD from old escrow to new
+4. Update configuration
+5. Old keys can be safely deleted
 ```
 
 ---
@@ -158,19 +159,19 @@ Attacker extracts a FROST share from one enclave via a side-channel vulnerabilit
 The CPU with SGX on server B has physically failed. Sealed data on disk cannot be decrypted (bound to MRENCLAVE + CPU key).
 
 ### Impact
-- B share is lost
-- A + C = 2-of-3 → **system continues operating**
+- ECDSA key B is lost
+- A + C = 2-of-3 multisig → **system continues operating**
 - But there is no redundancy now — losing one more operator = loss of signing capability
 
 ### Actions
 1. **Immediately**: A+C continue operating (withdrawals, trading — all OK)
-2. **Urgently**: key rotation to new 2-of-3 DKG (A+C+D, where D = new server)
+2. **Urgently**: key rotation — D generates a new ECDSA key -> update SignerListSet to [A, D, C]
 3. Transfer funds to new escrow
 4. Old escrow is empty, can be discarded
 
 ### Recovery Time
-- If D is already prepared (standby): ~5 minutes (DKG + transfer)
-- If D needs to be deployed: ~1-2 hours (provision Azure VM + install SGX + DKG)
+- If D is already prepared (standby): ~5 minutes (keygen + SignerListSet update + transfer)
+- If D needs to be deployed: ~1-2 hours (provision Azure VM + install SGX + keygen + SignerListSet)
 
 ---
 
@@ -186,8 +187,8 @@ Current: A (Hetzner), B (Azure), C (OVH)
 Target:  A (Hetzner), B (AWS), C (OVH)   ← B migrates Azure → AWS
 
 1. Deploy new SGX instance D on AWS
-2. Run DKG 2-of-3 between A, D, C → new group_pubkey
-3. FROST signing (A+C): transfer RLUSD from old escrow to new
+2. D generates ECDSA keypair inside enclave → address rD
+3. Update SignerListSet: [rA, rD, rC], quorum=2 (multisig signing by A+C)
 4. Update configuration: D replaces B
 5. Shut down B (Azure)
 
@@ -197,7 +198,7 @@ Time without withdrawals: ~5 minutes (only during the transfer moment)
 
 ### Key Point
 - **No need** to export keys from SGX
-- **No need** to trust the new provider — key is generated INSIDE the new enclave
+- **No need** to trust the new provider — the key is generated INSIDE the new enclave
 - Funds are always on XRPL — not on servers
 - Remote attestation on D confirms the code is the same (MRENCLAVE)
 
@@ -223,7 +224,7 @@ The enclave stores only balances + positions + margin (~25 KB for PoC, ~5 MB for
 ### Upgrade Procedure
 ```
 1. Deploy new powerful SGX server D
-2. Key rotation: DKG(A,B,C) → DKG(A,D,C)  (B is replaced by D)
+2. Key rotation: SignerListSet [rA,rB,rC] → [rA,rD,rC]  (B is replaced by D)
 3. Transfer funds
 4. Orchestrator on D handles a larger order book
 ```
@@ -237,7 +238,7 @@ All three operators simultaneously lost access to sealed data (data center fire,
 
 ### Backup: Shamir's Secret Sharing for Master Key
 
-During initial setup (DKG):
+During initial setup (ECDSA keygen + SignerListSet):
 1. Each enclave generates an **encrypted state export** encrypted with a master key
 2. The master key is split via Shamir 3-of-5 among trusted custodians
 3. Encrypted backups are stored outside the enclave (on USB, in a safe, in a bank)
@@ -246,7 +247,7 @@ During initial setup (DKG):
 ```
 1. 3 of 5 custodians gather and provide Shamir shares
 2. Reconstruct the master key INSIDE a new attested enclave
-3. Decrypt backup → restore state + FROST shares
+3. Decrypt backup → restore state + ECDSA keys
 4. New enclaves begin operating
 5. Key rotation is recommended after recovery
 ```
@@ -268,27 +269,27 @@ Even without Shamir backup:
 | 2 | 2 operators offline | ✅ | ❌ Waiting | ✅ | Wait for 1 to recover |
 | 3 | All 3 offline | ❌ | ❌ | ✅ (XRPL) | Shamir / restart |
 | 4 | 1 malicious | ✅ | ✅ (2 honest) | ✅ | Exclude from rotation |
-| 5 | SGX side-channel | ✅ | ✅ | ✅ (1 share not enough) | Key rotation |
-| 6 | Hardware failure | ✅ | ✅ (2-of-3) | ✅ | Key rotation to new DKG |
-| 7 | Provider migration | ✅ | ⚠️ 5 min | ✅ | DKG + transfer |
-| 8 | Scaling | ✅ | ⚠️ 5 min | ✅ | Key rotation |
+| 5 | SGX side-channel | ✅ | ✅ | ✅ (1 key not enough) | Key rotation |
+| 6 | Hardware failure | ✅ | ✅ (2-of-3) | ✅ | Key rotation + SignerListSet update |
+| 7 | Provider migration | ✅ | ⚠️ 5 min | ✅ | Keygen + SignerListSet update |
+| 8 | Scaling | ✅ | ⚠️ 5 min | ✅ | Key rotation + SignerListSet |
 | 9 | Catastrophic (all 3) | ❌ | ❌ | ✅ (XRPL) | Shamir 3-of-5 |
 
 ---
 
 ## 11. Threshold Flexibility: Not Just 2-of-3
 
-FROST supports arbitrary t-of-n. Enclave limits: `MAX_FROST_PARTICIPANTS = 16`, `MAX_FROST_GROUPS = 4`.
+XRPL SignerListSet supports up to 32 signers in a single SignerList. Each signer has a weight, and the quorum is set arbitrarily.
 
 ### Supported Configurations
 
 | Scheme | Operators | To Sign | Tolerated Failures | Signing Latency | Use Case |
 |---|---|---|---|---|---|
-| 2-of-3 | 3 | 2 | 1 | ~300 ms | PoC, small team |
-| 3-of-5 | 5 | 3 | 2 | ~400 ms | Production, good balance |
-| 5-of-9 | 9 | 5 | 4 | ~600 ms | High decentralization |
-| 7-of-11 | 11 | 7 | 4 | ~800 ms | Maximum decentralization |
-| 11-of-16 | 16 | 11 | 5 | ~1.2 sec | Protocol maximum |
+| 2-of-3 | 3 | 2 | 1 | ~100 ms | PoC, small team |
+| 3-of-5 | 5 | 3 | 2 | ~150 ms | Production, good balance |
+| 5-of-9 | 9 | 5 | 4 | ~200 ms | High decentralization |
+| 7-of-11 | 11 | 7 | 4 | ~250 ms | Maximum decentralization |
+| 16-of-32 | 32 | 16 | 16 | ~500 ms | Maximum XRPL SignerList |
 
 ### Choosing the Threshold
 
@@ -303,53 +304,55 @@ FROST supports arbitrary t-of-n. Enclave limits: `MAX_FROST_PARTICIPANTS = 16`, 
 | 7 | 4 | 3 | 4 (57%) |
 | 9 | 5 | 4 | 5 (56%) |
 
-### DKG Latency for Different n
+### Setup Latency for Different n
 
-DKG is performed **once** when creating the escrow. Growth with n:
+Keygen + SignerListSet is performed **once** when creating the escrow:
 
-| n | Share Exchanges | DKG Latency | Note |
-|---|---|---|---|
-| 3 | 6 | ~1.4 sec | Current PoC |
-| 5 | 20 | ~4 sec | |
-| 9 | 72 | ~14 sec | |
-| 16 | 240 | ~48 sec | Maximum, one-time operation |
+| n | ECDSA keygen (parallel) | SignerListSet tx | Total | Note |
+|---|---|---|---|---|
+| 3 | ~10 ms | ~4 sec | ~4 sec | Current PoC |
+| 5 | ~10 ms | ~4 sec | ~4 sec | |
+| 9 | ~10 ms | ~4 sec | ~4 sec | |
+| 32 | ~10 ms | ~4 sec | ~4 sec | Maximum XRPL, one-time operation |
 
-**DKG latency does not affect trading** — it is a one-time setup operation.
+**Setup latency does not affect trading** — it is a one-time operation. Unlike DKG, keygen does not require data exchange between instances.
 
 ### Signing Latency for Different t
 
-Signing latency = t × ~100ms (parallel nonce gen + parallel partial sign + aggregation):
+Multisig signing: orchestrator sends tx to t instances in parallel, collects ECDSA signatures, assembles Signers array:
 
 ```
-signing_latency ≈ 3 × round_trip_time   (fixed: nonce + sign + aggregate)
-                                          × ceil(t / parallel_capacity)
+signing_latency ≈ max(round_trip_time_to_each_signer) + assembly_time
+                ≈ ~100-200 ms (single network round-trip, parallel to all signers)
 ```
 
-In practice for t ≤ 16: **< 1.5 sec**, negligible compared to XRPL settlement (3-5 sec).
+In practice for t <= 32: **< 500 ms**, negligible compared to XRPL settlement (3-5 sec).
 
-### Multiple FROST Groups
+### Multiple Escrow Accounts
 
-`MAX_FROST_GROUPS = 4` allows up to 4 independent escrow accounts:
-- Group 0: main escrow (RLUSD collateral)
-- Group 1: insurance fund
-- Group 2: protocol treasury
-- Group 3: reserve
+Each escrow account has its own independent SignerListSet:
+- Escrow 0: main escrow (RLUSD collateral)
+- Escrow 1: insurance fund
+- Escrow 2: protocol treasury
+- Escrow 3: reserve
 
-Each group can have its own threshold (e.g., treasury = 3-of-5, trading = 2-of-3).
+Each escrow can have its own quorum and set of signers (e.g., treasury = 3-of-5, trading = 2-of-3).
+
+> **Note:** FROST/DKG remains available in the enclave for Bitcoin Taproot use cases, but is not used for XRPL operations.
 
 ---
 
 ## 12. Infrastructure Guarantees
 
 ### What Is Protected by Hardware (Intel SGX)
-- Private keys (FROST shares) — never leave the enclave
+- Private ECDSA keys — never leave the enclave
 - State in memory — isolated from OS and operator
 - Sealed data — encrypted with CPU key + MRENCLAVE
 
-### What Is Protected by Protocol (FROST 2-of-3)
-- No single operator can sign alone
+### What Is Protected by Protocol (XRPL SignerListSet 2-of-3)
+- No single operator can sign alone (quorum=2)
 - Stealing funds requires compromising 2 out of 3 SGX enclaves
-- Key rotation without service interruption
+- Key rotation via SignerListSet update without service interruption
 
 ### What Is Protected by XRPL
 - Funds are always on-chain (RLUSD on escrow)
