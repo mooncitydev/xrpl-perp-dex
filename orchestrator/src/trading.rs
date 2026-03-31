@@ -3,18 +3,25 @@
 //! Flow: user submits order → orderbook matches → for each fill,
 //! call enclave open_position for both maker and taker.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use anyhow::{bail, Result};
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
 use tracing::{error, info, warn};
 
 use crate::orderbook::{Order, OrderBook, OrderStatus, OrderType, TimeInForce, Trade};
+use crate::p2p::{FillMessage, OrderBatch, OrderMessage};
 use crate::perp_client::PerpClient;
 use crate::types::{FP8, Side};
 
-/// Trading engine: orderbook + enclave integration.
+/// Trading engine: orderbook + enclave integration + P2P batch publishing.
 pub struct TradingEngine {
     pub book: Mutex<OrderBook>,
     perp: PerpClient,
+    /// Channel to send order batches to P2P layer (sequencer mode).
+    batch_tx: Option<mpsc::Sender<OrderBatch>>,
+    /// Monotonic batch sequence number.
+    seq_num: AtomicU64,
 }
 
 /// Result of submitting an order.
@@ -38,7 +45,15 @@ impl TradingEngine {
         TradingEngine {
             book: Mutex::new(OrderBook::new(market)),
             perp,
+            batch_tx: None,
+            seq_num: AtomicU64::new(1),
         }
+    }
+
+    /// Enable P2P batch publishing (sequencer mode).
+    pub fn with_batch_publisher(mut self, tx: mpsc::Sender<OrderBatch>) -> Self {
+        self.batch_tx = Some(tx);
+        self
     }
 
     /// Submit an order: match on the book, then settle fills via enclave.
@@ -160,6 +175,45 @@ impl TradingEngine {
                     maker_error: maker_err,
                     taker_error: taker_err,
                 });
+            }
+        }
+
+        // Publish batch via P2P (sequencer mode)
+        if !trades.is_empty() {
+            if let Some(tx) = &self.batch_tx {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+
+                let batch = OrderBatch {
+                    seq_num: self.seq_num.fetch_add(1, Ordering::SeqCst),
+                    orders: vec![OrderMessage {
+                        order_id: order.id,
+                        user_id: order.user_id.clone(),
+                        side: format!("{}", order.side),
+                        order_type: format!("{:?}", order.order_type),
+                        price: order.price.to_string(),
+                        size: order.size.to_string(),
+                        leverage: order.leverage,
+                        status: format!("{:?}", order.status),
+                        fills: trades.iter().map(|t| FillMessage {
+                            trade_id: t.trade_id,
+                            maker_order_id: t.maker_order_id,
+                            taker_order_id: t.taker_order_id,
+                            price: t.price.to_string(),
+                            size: t.size.to_string(),
+                            taker_side: format!("{}", t.taker_side),
+                        }).collect(),
+                    }],
+                    state_hash: format!("{:016x}", now), // TODO: real state hash
+                    timestamp: now,
+                    sequencer_id: String::new(), // filled by P2P layer
+                };
+
+                if let Err(e) = tx.send(batch).await {
+                    warn!("failed to send batch to P2P: {}", e);
+                }
             }
         }
 

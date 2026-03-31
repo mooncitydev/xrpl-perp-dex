@@ -172,7 +172,12 @@ async fn main() -> Result<()> {
     }
 
     // Create trading engine
-    let engine = TradingEngine::new(&cli.market, perp_for_api);
+    // For sequencer: create batch channel for P2P publishing
+    let (trade_batch_tx, mut trade_batch_rx) = tokio::sync::mpsc::channel::<p2p::OrderBatch>(100);
+    let mut engine = TradingEngine::new(&cli.market, perp_for_api);
+    if cli.sequencer {
+        engine = engine.with_batch_publisher(trade_batch_tx.clone());
+    }
     let app_state = Arc::new(AppState {
         engine,
         perp: PerpClient::new(&cli.enclave_url)?,
@@ -193,6 +198,21 @@ async fn main() -> Result<()> {
     let mut p2p_node = p2p::P2PNode::new(&cli.p2p_listen, batch_tx)
         .await
         .context("failed to start P2P node")?;
+
+    // Sequencer: wire trade batch channel to P2P publishing
+    if cli.sequencer {
+        let (pub_tx, pub_rx) = tokio::sync::mpsc::channel::<p2p::OrderBatch>(100);
+        p2p_node.set_publish_channel(pub_rx);
+
+        // Forward trade batches to P2P publish channel
+        let _fwd_handle = tokio::spawn(async move {
+            while let Some(batch) = trade_batch_rx.recv().await {
+                if let Err(e) = pub_tx.send(batch).await {
+                    warn!("failed to forward batch to P2P publish: {}", e);
+                }
+            }
+        });
+    }
 
     // Connect to peers
     if let Some(peers_str) = &cli.p2p_peers {
@@ -219,18 +239,20 @@ async fn main() -> Result<()> {
         p2p_node.run().await;
     });
 
-    // Validator: process received batches
+    // Validator: process received batches from P2P
     if !is_sequencer {
         let _validator_handle = tokio::spawn(async move {
             while let Some(batch) = batch_rx.recv().await {
                 info!(
                     seq = batch.seq_num,
                     orders = batch.orders.len(),
+                    fills = batch.orders.iter().map(|o| o.fills.len()).sum::<usize>(),
                     hash = %batch.state_hash,
-                    "replaying batch from sequencer"
+                    "received batch from sequencer — replaying"
                 );
                 // TODO: replay orders against local order book
-                // TODO: verify state_hash matches
+                // TODO: call enclave open_position for each fill
+                // TODO: verify state_hash matches after replay
             }
         });
     }

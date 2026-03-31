@@ -81,8 +81,10 @@ struct PerpBehaviour {
 pub struct P2PNode {
     swarm: Swarm<PerpBehaviour>,
     topic: gossipsub::IdentTopic,
-    /// Channel to send received batches to the orchestrator.
+    /// Channel to send received batches to the orchestrator (validator).
     batch_tx: mpsc::Sender<OrderBatch>,
+    /// Channel to receive batches to publish (sequencer).
+    publish_rx: Option<mpsc::Receiver<OrderBatch>>,
     /// Our peer ID.
     pub peer_id: PeerId,
 }
@@ -143,6 +145,7 @@ impl P2PNode {
             swarm,
             topic,
             batch_tx,
+            publish_rx: None,
             peer_id,
         };
 
@@ -159,6 +162,11 @@ impl P2PNode {
 
         info!(peer_id = %node.peer_id, "P2P node created");
         Ok(node)
+    }
+
+    /// Set publish channel (sequencer mode).
+    pub fn set_publish_channel(&mut self, rx: mpsc::Receiver<OrderBatch>) {
+        self.publish_rx = Some(rx);
     }
 
     /// Connect to a peer (bootstrap).
@@ -181,8 +189,31 @@ impl P2PNode {
 
     /// Run the event loop. Call this in a tokio::spawn.
     pub async fn run(&mut self) {
+        // Take publish_rx out of self for use in select!
+        let mut publish_rx = self.publish_rx.take();
+
         loop {
-            match self.swarm.select_next_some().await {
+            tokio::select! {
+                // Handle publish requests from sequencer
+                Some(batch) = async {
+                    match &mut publish_rx {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending::<Option<OrderBatch>>().await,
+                    }
+                } => {
+                    match self.publish_batch(&batch) {
+                        Ok(_) => info!(
+                            seq = batch.seq_num,
+                            orders = batch.orders.len(),
+                            "published batch via gossipsub"
+                        ),
+                        Err(e) => warn!("gossipsub publish failed: {}", e),
+                    }
+                }
+
+                // Handle swarm events
+                event = self.swarm.select_next_some() => {
+            match event {
                 SwarmEvent::Behaviour(PerpBehaviourEvent::Gossipsub(
                     gossipsub::Event::Message {
                         propagation_source,
@@ -236,6 +267,8 @@ impl P2PNode {
                     warn!(peer = %peer_id, "disconnected");
                 }
                 _ => {}
+            }
+                }
             }
         }
     }
