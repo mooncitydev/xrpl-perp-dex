@@ -50,7 +50,8 @@ HAProxy **обязателен** даже для localhost — он сериал
 | POST | `/v1/perp/withdraw` | Вывод средств (margin check + SGX signing) |
 | GET | `/v1/perp/liquidations/check` | Посмотреть ликвидируемые позиции |
 | GET | `/v1/pool/status` | Статус enclave |
-| POST | `/v1/pool/report` | Attestation report |
+| POST | `/v1/pool/report` | Attestation report (legacy) |
+| POST | `/v1/attestation/quote` | DCAP remote attestation (SGX Quote v3, Azure DCsv3 only) |
 
 ### Internal API (только localhost, недоступно извне)
 

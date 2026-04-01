@@ -11,6 +11,11 @@
 ### 1. Public endpoints (no authentication)
 
 ```bash
+# DCAP Remote Attestation (verify enclave integrity)
+curl -X POST http://94.130.18.162:3000/v1/attestation/quote \
+  -H "Content-Type: application/json" \
+  -d '{"user_data": "0xdeadbeef"}'
+
 # Order book
 curl http://94.130.18.162:3000/v1/markets/XRP-RLUSD-PERP/orderbook
 
@@ -465,6 +470,48 @@ Auth: Not required
 ```
 
 Last 100 trades, most recent first.
+
+---
+
+### DCAP Remote Attestation
+
+```
+POST /v1/attestation/quote
+Auth: Not required
+```
+
+Verifies that the SGX enclave is running genuine, untampered code on Intel hardware.
+Returns an Intel-signed SGX Quote v3 with ECDSA certificate chain.
+
+**Request:**
+```json
+{"user_data": "0xdeadbeef"}
+```
+
+`user_data` is a challenge nonce (up to 64 bytes hex). Include a random value to prevent replay attacks.
+
+**Response (Azure DCsv3 — DCAP available):**
+```json
+{
+    "status": "success",
+    "quote_hex": "0x030002000000000...",
+    "quote_size": 4734
+}
+```
+
+**Response (Hetzner / no DCAP hardware):**
+```json
+{
+    "status": "error",
+    "message": "DCAP attestation not available on this platform. Use Azure DCsv3 for hardware attestation."
+}
+```
+HTTP status: 503
+
+**Verification:** Use `dcap_verifier.py` from the enclave repo to independently verify the quote:
+```bash
+python3 dcap_verifier.py --url http://94.130.18.162:3000/v1 --expected-mrenclave <HASH>
+```
 
 ---
 
