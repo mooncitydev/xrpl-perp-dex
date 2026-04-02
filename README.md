@@ -146,6 +146,8 @@ Verify with: `python3 dcap_verifier.py --url http://host:3000/v1/attestation/quo
 | [Latency Analysis (EN)](research/06-latency-analysis.en.md) | English version |
 | [Failure Modes & Recovery (RU)](research/07-failure-modes-and-recovery.md) | Full stack failure scenarios, split-brain, cascading failures |
 | [Failure Modes & Recovery (EN)](research/07-failure-modes-and-recovery.en.md) | English version |
+| [TEE vs Smart Contract Security (RU)](research/08-tee-vs-smart-contract-security.md) | Why Drift's $200M hack is impossible with TEE + multisig |
+| [TEE vs Smart Contract Security (EN)](research/08-tee-vs-smart-contract-security.en.md) | English version |
 
 ## Guides
 
