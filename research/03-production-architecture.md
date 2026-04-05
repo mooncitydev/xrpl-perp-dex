@@ -23,16 +23,14 @@
 │                     │  Mutex → enclave │                      │
 │                     └────────┬─────────┘                      │
 │                              │ HTTPS (localhost)              │
-│                     ┌────────┼────────┐                      │
-│                     ▼        ▼        ▼                      │
-│                  :9088    :9089    :9090                      │
-│                ┌────────────────────────┐                    │
-│                │  SGX Enclave Instances  │                    │
-│                │  (perp-dex-server)      │                    │
-│                │  TCSNum=1, однопоточные │                    │
-│                │  XRPL multisig 2-of-3   │                    │
-│                └────────────────────────┘                    │
-│                              │                                │
+│                              ▼                                │
+│                     ┌──────────────────┐                      │
+│                     │  SGX Enclave     │                      │
+│                     │  :9088           │                      │
+│                     │  TCSNum=1        │                      │
+│                     │  ECDSA key       │                      │
+│                     └──────────────────┘                      │
+│                                                               │
 │   Orchestrator также:                                         │
 │       ├──► XRPL Mainnet (deposit monitor)                    │
 │       ├──► Binance/CEX (price feed)                          │
@@ -40,68 +38,16 @@
 └──────────────────────────────────────────────────────────────┘
 ```
 
-**Архитектура:** nginx → Orchestrator → Enclave.
+**Архитектура одного оператора:** nginx → Orchestrator → Enclave.
 - **nginx** терминирует TLS, проксирует к Orchestrator (:3000)
 - **Orchestrator** (Rust, multi-threaded) управляет concurrency — сериализует запросы к enclave через Mutex
 - **Enclave** (TCSNum=1, однопоточный) — получает один запрос за раз от Orchestrator
 
-Enclave instances не доступны напрямую из интернета (только localhost).
+Этот документ описывает архитектуру **одного оператора (одного сервера)**.
+Multi-operator координация (3 оператора, XRPL multisig 2-of-3, P2P) описана
+в [04-multi-operator-architecture](04-multi-operator-architecture.md).
 
 ---
-
-## MVP vs Production: зачем 3 инстанса enclave
-
-### MVP (текущее состояние)
-
-```
-nginx :443 → Orchestrator :3000 → Enclave :9088 (один инстанс)
-```
-
-Один enclave instance достаточен для полной демонстрации всей логики:
-deposit → trade → liquidation → funding → withdraw. Escrow аккаунт на XRPL
-контролируется одним ключом (обычная подпись).
-
-### Production (целевое состояние)
-
-```
-Оператор A (Azure DCsv3)          Оператор B (Azure DCsv3)          Оператор C (Azure DCsv3)
-┌─────────────────────┐           ┌─────────────────────┐           ┌─────────────────────┐
-│ nginx → Orchestrator│           │ nginx → Orchestrator│           │ nginx → Orchestrator│
-│        → Enclave    │           │        → Enclave    │           │        → Enclave    │
-│     ECDSA key A     │           │     ECDSA key B     │           │     ECDSA key C     │
-└─────────┬───────────┘           └─────────┬───────────┘           └─────────┬───────────┘
-          │                                 │                                 │
-          └──────── XRPL SignerListSet 2-of-3: escrow account ───────────────┘
-```
-
-3 оператора на **разных физических машинах** — это принципиально.
-Запускать 3 инстанса на одной машине **бесполезно для безопасности**:
-если атакующий получил доступ к серверу, он получил все 3 ключа сразу.
-
-Зачем нужны разные операторы:
-
-1. **XRPL native multisig (SignerListSet quorum=2).** Escrow аккаунт настроен
-   так, что для withdrawal нужны подписи от минимум 2 из 3 операторов.
-   Master key отключён — единственная точка отказа устранена.
-
-2. **Защита от компрометации одного сервера.** Даже если злоумышленник получит
-   root-доступ к машине одного оператора (или эксплуатирует SGX side-channel),
-   он получит только 1 из 3 ключей — недостаточно для подписи withdrawal.
-
-3. **Отказоустойчивость.** Если сервер одного оператора падает, оставшиеся 2
-   продолжают обслуживать withdrawals (2-of-3).
-
-4. **Независимая верификация.** Каждый оператор независимо проверяет margin
-   перед подписью. Sequencer (текущий лидер) собирает подписи от peers и
-   формирует XRPL Signers array для отправки на ledger.
-
-5. **Доверие через attestation.** Операторы не доверяют друг другу — каждый
-   верифицирует DCAP attestation quote peers (одинаковый MRENCLAVE). Если
-   оператор запустит модифицированный enclave, его quote не пройдёт верификацию
-   и peers откажутся координироваться с ним.
-
-> Подробнее о multi-operator архитектуре, sequencer election и P2P
-> координации см. [04-multi-operator-architecture](04-multi-operator-architecture.md).
 
 ---
 
@@ -189,7 +135,7 @@ server {
 ```
 
 **Concurrency:** Orchestrator использует `tokio::sync::Mutex` для сериализации
-запросов к каждому enclave instance. Это гарантирует что однопоточный enclave
+запросов к enclave. Это гарантирует что однопоточный enclave
 (TCSNum=1) не получит параллельных ecalls. nginx проксирует только к
 Orchestrator — прямой доступ к enclave невозможен.
 
@@ -207,19 +153,18 @@ Orchestrator — прямой доступ к enclave невозможен.
 
 ### 2. SGX Enclave (perp-dex-server)
 
-- **MVP:** 1 инстанс на порту 9088, один ECDSA ключ
-- **Production:** 1 инстанс на каждом из 3 серверов разных операторов
-- `enclave.signed.so` одинаковый (одинаковый MRENCLAVE, верифицируется через DCAP)
+- Один инстанс на порту 9088
 - TCSNum=1 (single-threaded)
-- Каждый оператор держит свой независимый ECDSA ключ → XRPL SignerListSet 2-of-3
-- State sealed на диск
-- Слушает на 127.0.0.1 (не доступен извне напрямую)
+- ECDSA ключ генерируется внутри enclave (не извлекаем)
+- State sealed на диск (партиционированно, 5 частей по <64KB)
+- Слушает на 127.0.0.1 (не доступен извне)
+- DCAP remote attestation (Azure DCsv3)
 
 ### 3. Orchestrator (Rust binary)
 
 - Один процесс, слушает на :3000 (localhost, за nginx)
 - Подключается **напрямую** к enclave (localhost:9088)
-- Сериализует запросы через `tokio::sync::Mutex` (один запрос за раз к каждому instance)
+- Сериализует запросы через `tokio::sync::Mutex` (один запрос за раз)
 - XRPL signature auth для пользовательских запросов
 - CLOB orderbook с price-time priority
 - libp2p gossipsub для репликации order flow между операторами
@@ -232,21 +177,20 @@ Orchestrator — прямой доступ к enclave невозможен.
 
 ### 4. XRPL Mainnet
 
-- **MVP:** escrow контролируется одним SGX ключом (обычная подпись)
-- **Production:** escrow контролируется 3 операторами (SignerListSet quorum=2, master key disabled)
+- Escrow аккаунт контролируется SGX ECDSA ключом
 - RLUSD collateral на escrow
 - Deposits: пользователь → Payment → escrow → Orchestrator детектит → enclave кредитует
-- Withdrawals (MVP): enclave проверяет margin → подписывает → отправляет на XRPL
-- Withdrawals (Production): sequencer собирает подписи от 2 из 3 операторов → Signers array → XRPL
+- Withdrawals: enclave проверяет margin → подписывает → Orchestrator отправляет на XRPL
+- Multi-operator (multisig 2-of-3) — см. [04-multi-operator-architecture](04-multi-operator-architecture.md)
 
 ---
 
 ## Сетевые правила
 
 ```
-# Enclave instances — только localhost
-iptables -A INPUT -p tcp --dport 9088:9099 -s 127.0.0.1 -j ACCEPT
-iptables -A INPUT -p tcp --dport 9088:9099 -j DROP
+# Enclave — только localhost
+iptables -A INPUT -p tcp --dport 9088 -s 127.0.0.1 -j ACCEPT
+iptables -A INPUT -p tcp --dport 9088 -j DROP
 
 # nginx — публичный
 iptables -A INPUT -p tcp --dport 443 -j ACCEPT
@@ -254,7 +198,7 @@ iptables -A INPUT -p tcp --dport 443 -j ACCEPT
 # Orchestrator — слушает :3000 только localhost
 iptables -A INPUT -p tcp --dport 3000 -s 127.0.0.1 -j ACCEPT
 iptables -A INPUT -p tcp --dport 3000 -j DROP
-# Исходящие: localhost:9088-9090, XRPL (51234), Binance (443)
+# Исходящие: localhost:9088, XRPL (51234), Binance (443)
 ```
 
 ---
