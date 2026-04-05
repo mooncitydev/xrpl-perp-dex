@@ -64,33 +64,44 @@ is controlled by one key (regular signature).
 ### Production (target state)
 
 ```
-nginx :443 → Orchestrator :3000 → Enclave :9088 ─┐
-                                 → Enclave :9089 ─┤ SignerListSet 2-of-3
-                                 → Enclave :9090 ─┘
+Operator A (Azure DCsv3)          Operator B (Azure DCsv3)          Operator C (Azure DCsv3)
+┌─────────────────────┐           ┌─────────────────────┐           ┌─────────────────────┐
+│ nginx → Orchestrator│           │ nginx → Orchestrator│           │ nginx → Orchestrator│
+│        → Enclave    │           │        → Enclave    │           │        → Enclave    │
+│     ECDSA key A     │           │     ECDSA key B     │           │     ECDSA key C     │
+└─────────┬───────────┘           └─────────┬───────────┘           └─────────┬───────────┘
+          │                                 │                                 │
+          └──────── XRPL SignerListSet 2-of-3: escrow account ───────────────┘
 ```
 
-3 instances are needed **not for performance** (each is single-threaded anyway),
-but for **withdrawal security**:
+3 operators on **separate physical machines** — this is essential.
+Running 3 instances on the same machine is **useless for security**:
+if an attacker gains access to the server, they get all 3 keys at once.
 
-1. **XRPL native multisig (SignerListSet quorum=2).** The escrow account is
-   configured so that sending a Payment (withdrawal) requires signatures from
-   at least 2 of 3 instances. Master key is disabled — single point of failure
-   is eliminated.
+Why separate operators are needed:
 
-2. **Protection against single-instance compromise.** Even if an attacker gains
-   access to one enclave's memory (side-channel attack, SGX vulnerability), they
-   obtain only 1 of 3 keys — insufficient to sign a withdrawal transaction.
+1. **XRPL native multisig (SignerListSet quorum=2).** The escrow account
+   requires signatures from at least 2 of 3 operators for withdrawal.
+   Master key is disabled — single point of failure is eliminated.
 
-3. **Fault tolerance.** If one instance crashes or its sealed state is corrupted,
-   the remaining 2 continue to serve withdrawals (2-of-3).
+2. **Protection against single-server compromise.** Even if an attacker gains
+   root access to one operator's machine (or exploits an SGX side-channel),
+   they obtain only 1 of 3 keys — insufficient to sign a withdrawal transaction.
 
-4. **Independent verification.** Each instance independently checks margin
-   before signing. Orchestrator collects 2 signatures and assembles the XRPL
-   Signers array for ledger submission.
+3. **Fault tolerance.** If one operator's server goes down, the remaining 2
+   continue to serve withdrawals (2-of-3).
 
-> **Note:** All 3 instances run identical `enclave.signed.so` (same MRENCLAVE),
-> which is verified via DCAP remote attestation. The only difference is the
-> generated ECDSA keys.
+4. **Independent verification.** Each operator independently checks margin
+   before signing. The sequencer (current leader) collects signatures from
+   peers and assembles the XRPL Signers array for ledger submission.
+
+5. **Trust via attestation.** Operators don't trust each other — each verifies
+   peers' DCAP attestation quotes (same MRENCLAVE). If an operator runs a
+   modified enclave, its quote will fail verification and peers will refuse
+   to coordinate with it.
+
+> For details on multi-operator architecture, sequencer election, and P2P
+> coordination, see [04-multi-operator-architecture](04-multi-operator-architecture.en.md).
 
 ---
 
@@ -194,19 +205,20 @@ to Orchestrator — direct access to enclave is impossible.
 - WebSocket support for real-time data
 - Rate limiting on user endpoints
 
-### 2. SGX Enclave Instances (perp-dex-server)
+### 2. SGX Enclave (perp-dex-server)
 
-- 3 instances on ports 9088-9090
-- Each with identical `enclave.signed.so` (same MRENCLAVE)
-- TCSNum=1 (single-threaded per instance)
-- XRPL native multisig (SignerListSet): each instance holds its own independent ECDSA key
-- State sealed to disk (per-instance)
-- Listen on 127.0.0.1 (not directly accessible from outside)
+- **MVP:** 1 instance on port 9088, single ECDSA key
+- **Production:** 1 instance on each of 3 separate operator servers
+- Identical `enclave.signed.so` (same MRENCLAVE, verified via DCAP)
+- TCSNum=1 (single-threaded)
+- Each operator holds its own independent ECDSA key → XRPL SignerListSet 2-of-3
+- State sealed to disk
+- Listens on 127.0.0.1 (not directly accessible from outside)
 
 ### 3. Orchestrator (Rust binary)
 
 - Single process, listens on :3000 (localhost, behind nginx)
-- Connects **directly** to enclave instances (localhost:9088-9090)
+- Connects **directly** to enclave (localhost:9088)
 - Serializes requests via `tokio::sync::Mutex` (one request at a time per instance)
 - XRPL signature auth for user requests
 - CLOB orderbook with price-time priority
@@ -220,10 +232,12 @@ to Orchestrator — direct access to enclave is impossible.
 
 ### 4. XRPL Mainnet
 
-- Escrow account controlled by SGX (3 independent ECDSA keys, SignerListSet quorum=2, master key disabled)
+- **MVP:** escrow controlled by single SGX key (regular signature)
+- **Production:** escrow controlled by 3 operators (SignerListSet quorum=2, master key disabled)
 - RLUSD collateral on escrow
 - Deposits: user -> Payment -> escrow -> Orchestrator detects -> enclave credits
-- Withdrawals: user requests -> enclave checks margin -> orchestrator collects 2 ECDSA signatures from 2 instances -> assembles Signers array -> submits to XRPL
+- Withdrawals (MVP): enclave checks margin -> signs -> submits to XRPL
+- Withdrawals (Production): sequencer collects signatures from 2 of 3 operators -> Signers array -> XRPL
 
 ---
 
@@ -251,7 +265,5 @@ iptables -A INPUT -p tcp --dport 3000 -j DROP
 |------|---------|--------|
 | 443 | nginx (public API) | Internet |
 | 3000 | Orchestrator | localhost only |
-| 9088 | Enclave instance 1 | localhost only |
-| 9089 | Enclave instance 2 | localhost only |
-| 9090 | Enclave instance 3 | localhost only |
+| 9088 | SGX Enclave | localhost only |
 | 8085-8087 | Phoenix PM (do not touch) | localhost only |
