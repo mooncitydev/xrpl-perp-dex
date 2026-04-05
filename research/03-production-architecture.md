@@ -134,6 +134,12 @@ server {
 # limit_req_zone $binary_remote_addr zone=perp_api:10m rate=10r/s;
 ```
 
+**Whitelist-подход:** nginx проксирует **только явно перечисленные** public endpoints.
+Всё остальное (включая internal endpoints вроде `/v1/perp/deposit`, `/v1/perp/price`,
+`/v1/pool/generate` и т.д.) попадает в `location /` → `return 403`. Это безопаснее
+чем blacklist: если в enclave появится новый endpoint, он **не будет доступен** извне
+пока его явно не добавят в nginx конфигурацию.
+
 **Concurrency:** Orchestrator использует `tokio::sync::Mutex` для сериализации
 запросов к enclave. Это гарантирует что однопоточный enclave
 (TCSNum=1) не получит параллельных ecalls. nginx проксирует только к

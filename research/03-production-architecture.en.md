@@ -134,6 +134,12 @@ server {
 # limit_req_zone $binary_remote_addr zone=perp_api:10m rate=10r/s;
 ```
 
+**Whitelist approach:** nginx proxies **only explicitly listed** public endpoints.
+Everything else (including internal endpoints like `/v1/perp/deposit`, `/v1/perp/price`,
+`/v1/pool/generate`, etc.) falls through to `location /` → `return 403`. This is safer
+than a blacklist: if a new endpoint is added to the enclave, it **will not be accessible**
+from outside until explicitly added to the nginx configuration.
+
 **Concurrency:** Orchestrator uses `tokio::sync::Mutex` to serialize
 requests to the enclave. This guarantees that a single-threaded
 enclave (TCSNum=1) does not receive parallel ecalls. nginx only proxies
