@@ -11,36 +11,47 @@
 ┌──────────────────────────────────────────────────────────────┐
 │                        Internet                               │
 │                                                               │
-│   User/Trader ─── HTTPS ───► HAProxy :443 (public frontend) │
-│                                   │                           │
-│                          ┌────────┼────────┐                 │
-│                          ▼        ▼        ▼                 │
-│                       :9088    :9089    :9090                 │
-│                     ┌────────────────────────┐               │
-│                     │  SGX Enclave Instances  │               │
-│                     │  (perp-dex-server)      │               │
-│                     │  TCSNum=1, single-threaded │            │
-│                     │  XRPL multisig 2-of-3   │               │
-│                     └────────────────────────┘               │
-│                          ▲                                    │
-│                          │                                    │
-│   Orchestrator ──────► HAProxy :9443 (internal frontend)     │
-│     (Rust)                 127.0.0.1 only                    │
-│       │                                                       │
+│   User/Trader ─── HTTPS ───► nginx :443                      │
+│                          (api-perp.ph18.io)                   │
+│                               │                               │
+│                               ▼                               │
+│                     ┌──────────────────┐                      │
+│                     │  Orchestrator    │                      │
+│                     │  (Rust :3000)    │                      │
+│                     │  Order book      │                      │
+│                     │  Auth (XRPL sig) │                      │
+│                     │  Mutex → enclave │                      │
+│                     └────────┬─────────┘                      │
+│                              │ HTTPS (localhost)              │
+│                     ┌────────┼────────┐                      │
+│                     ▼        ▼        ▼                      │
+│                  :9088    :9089    :9090                      │
+│                ┌────────────────────────┐                    │
+│                │  SGX Enclave Instances  │                    │
+│                │  (perp-dex-server)      │                    │
+│                │  TCSNum=1, single-threaded │                 │
+│                │  XRPL multisig 2-of-3   │                    │
+│                └────────────────────────┘                    │
+│                              │                                │
+│   Orchestrator also:                                          │
 │       ├──► XRPL Mainnet (deposit monitor)                    │
-│       └──► Binance/CEX (price feed)                          │
+│       ├──► Binance/CEX (price feed)                          │
+│       └──► P2P gossipsub (order replication)                 │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-**Critical:** Each enclave instance is single-threaded (TCSNum=1). One ecall at a time.
-HAProxy is **mandatory** even for localhost -- it serializes requests into a queue
-and distributes them across instances, preventing conflicts.
+**Architecture:** nginx → Orchestrator → Enclave.
+- **nginx** terminates TLS, proxies to Orchestrator (:3000)
+- **Orchestrator** (Rust, multi-threaded) manages concurrency — serializes requests to enclave via Mutex
+- **Enclave** (TCSNum=1, single-threaded) — receives one request at a time from Orchestrator
+
+Enclave instances are not directly accessible from the internet (localhost only).
 
 ---
 
 ## API Separation: Public vs Internal
 
-### Public API (via HAProxy, accessible to users)
+### Public API (via nginx, accessible to users)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -50,7 +61,8 @@ and distributes them across instances, preventing conflicts.
 | POST | `/v1/perp/withdraw` | Withdraw funds (margin check + SGX signing) |
 | GET | `/v1/perp/liquidations/check` | View liquidatable positions |
 | GET | `/v1/pool/status` | Enclave status |
-| POST | `/v1/pool/report` | Attestation report |
+| POST | `/v1/pool/report` | Attestation report (legacy) |
+| POST | `/v1/attestation/quote` | DCAP remote attestation (SGX Quote v3, Azure DCsv3 only) |
 
 ### Internal API (localhost only, not exposed externally)
 
@@ -69,70 +81,72 @@ and distributes them across instances, preventing conflicts.
 
 ---
 
-## HAProxy Configuration
+## nginx Configuration
 
-```haproxy
-# === Public frontend (users) ===
-frontend perp-public
-    bind *:443 ssl crt /etc/ssl/perp.pem
-    mode http
+```nginx
+# /etc/nginx/sites-available/api-perp.ph18.io
 
-    # Block ALL internal endpoints — users see only public API
-    acl is_internal path_beg /v1/perp/deposit
-    acl is_internal path_beg /v1/perp/price
-    acl is_internal path_beg /v1/perp/liquidate
-    acl is_internal path_beg /v1/perp/funding
-    acl is_internal path_beg /v1/perp/state
-    acl is_internal path_beg /v1/pool/generate
-    acl is_internal path_beg /v1/pool/sign
-    acl is_internal path_beg /v1/pool/frost
-    acl is_internal path_beg /v1/pool/dkg
-    acl is_internal path_beg /v1/pool/load
-    acl is_internal path_beg /v1/pool/unload
-    acl is_internal path_beg /v1/pool/schnorr
-    acl is_internal path_beg /v1/pool/musig
-    acl is_internal path_beg /v1/pool/regenerate
-    acl is_internal path_beg /v1/pool/validate
-    acl is_internal path_beg /v1/pool/recovery
-    http-request deny if is_internal
+server {
+    listen 443 ssl http2;
+    server_name api-perp.ph18.io;
 
-    default_backend enclave_instances
+    ssl_certificate     /etc/letsencrypt/live/api-perp.ph18.io/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/api-perp.ph18.io/privkey.pem;
 
-# === Internal frontend (orchestrator only) ===
-frontend perp-internal
-    bind 127.0.0.1:9443 ssl crt /etc/ssl/perp.pem
-    mode http
-    # No endpoint blocking — orchestrator has full access
-    default_backend enclave_instances
+    # === Public API → Orchestrator (:3000) ===
+    # Orchestrator handles auth, orderbook, concurrency (Mutex → enclave)
 
-# === Backend: enclave instances ===
-# maxconn 1 per server — enclave is single-threaded (TCSNum=1)
-# queue handles waiting requests
-backend enclave_instances
-    mode http
-    balance roundrobin
-    timeout queue 5s
-    timeout server 30s
-    option httpchk GET /v1/pool/status
-    server enclave1 127.0.0.1:9088 maxconn 1 check ssl verify none
-    server enclave2 127.0.0.1:9089 maxconn 1 check ssl verify none
-    server enclave3 127.0.0.1:9090 maxconn 1 check ssl verify none
+    location /v1/perp/balance     { proxy_pass http://127.0.0.1:3000; }
+    location /v1/perp/position/   { proxy_pass http://127.0.0.1:3000; }
+    location /v1/perp/withdraw    { proxy_pass http://127.0.0.1:3000; }
+    location /v1/perp/liquidations/check { proxy_pass http://127.0.0.1:3000; }
+    location /v1/pool/status      { proxy_pass http://127.0.0.1:3000; }
+    location /v1/pool/report      { proxy_pass http://127.0.0.1:3000; }
+    location /v1/attestation/     { proxy_pass http://127.0.0.1:3000; }
+
+    # WebSocket (orderbook, trades, liquidations)
+    location /ws {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 86400;
+    }
+
+    # Block everything else — internal endpoints not exposed
+    location / {
+        return 403;
+    }
+
+    # Standard proxy headers
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    # Rate limiting
+    limit_req zone=perp_api burst=20 nodelay;
+}
+
+# Rate limit zone (in http block)
+# limit_req_zone $binary_remote_addr zone=perp_api:10m rate=10r/s;
 ```
 
-**maxconn 1** -- the key parameter. HAProxy sends only one request
-at a time to each instance. Others wait in the queue. This guarantees
-that a single-threaded enclave does not receive parallel ecalls.
+**Concurrency:** Orchestrator uses `tokio::sync::Mutex` to serialize
+requests to each enclave instance. This guarantees that a single-threaded
+enclave (TCSNum=1) does not receive parallel ecalls. nginx only proxies
+to Orchestrator — direct access to enclave is impossible.
 
 ---
 
 ## Components
 
-### 1. HAProxy/nginx (reverse proxy)
+### 1. nginx (reverse proxy)
 
-- Terminates TLS for users
-- Blocks internal endpoints
-- Round-robin across enclave instances
-- Health check via `/v1/pool/status`
+- Terminates TLS for users (Let's Encrypt)
+- Proxies only public endpoints to Orchestrator (:3000)
+- Blocks everything else (return 403)
+- WebSocket support for real-time data
 - Rate limiting on user endpoints
 
 ### 2. SGX Enclave Instances (perp-dex-server)
@@ -146,9 +160,12 @@ that a single-threaded enclave does not receive parallel ecalls.
 
 ### 3. Orchestrator (Rust binary)
 
-- Single process, runs on localhost
-- Connects **through HAProxy internal frontend** (127.0.0.1:9443), NOT directly to instance
-- HAProxy distributes and serializes requests across instances
+- Single process, listens on :3000 (localhost, behind nginx)
+- Connects **directly** to enclave instances (localhost:9088-9090)
+- Serializes requests via `tokio::sync::Mutex` (one request at a time per instance)
+- XRPL signature auth for user requests
+- CLOB orderbook with price-time priority
+- libp2p gossipsub for order flow replication between operators
 - Functions:
   - **Price feed**: Binance API -> enclave price update (every 5 sec)
   - **Deposit monitor**: XRPL ledger -> enclave deposit credit
@@ -172,13 +189,13 @@ that a single-threaded enclave does not receive parallel ecalls.
 iptables -A INPUT -p tcp --dport 9088:9099 -s 127.0.0.1 -j ACCEPT
 iptables -A INPUT -p tcp --dport 9088:9099 -j DROP
 
-# HAProxy — public
+# nginx — public
 iptables -A INPUT -p tcp --dport 443 -j ACCEPT
 
-# Orchestrator — no listening ports, outbound only:
-#   -> localhost:9088 (enclave)
-#   -> XRPL nodes (port 51234)
-#   -> Binance API (port 443)
+# Orchestrator — listens :3000 localhost only
+iptables -A INPUT -p tcp --dport 3000 -s 127.0.0.1 -j ACCEPT
+iptables -A INPUT -p tcp --dport 3000 -j DROP
+# Outbound: localhost:9088-9090, XRPL (51234), Binance (443)
 ```
 
 ---
@@ -187,7 +204,8 @@ iptables -A INPUT -p tcp --dport 443 -j ACCEPT
 
 | Port | Service | Access |
 |------|---------|--------|
-| 443 | HAProxy (public API) | Internet |
+| 443 | nginx (public API) | Internet |
+| 3000 | Orchestrator | localhost only |
 | 9088 | Enclave instance 1 | localhost only |
 | 9089 | Enclave instance 2 | localhost only |
 | 9090 | Enclave instance 3 | localhost only |

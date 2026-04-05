@@ -11,30 +11,41 @@
 ┌──────────────────────────────────────────────────────────────┐
 │                        Internet                               │
 │                                                               │
-│   User/Trader ─── HTTPS ───► HAProxy :443 (public frontend) │
-│                                   │                           │
-│                          ┌────────┼────────┐                 │
-│                          ▼        ▼        ▼                 │
-│                       :9088    :9089    :9090                 │
-│                     ┌────────────────────────┐               │
-│                     │  SGX Enclave Instances  │               │
-│                     │  (perp-dex-server)      │               │
-│                     │  TCSNum=1, однопоточные │               │
-│                     │  XRPL multisig 2-of-3   │               │
-│                     └────────────────────────┘               │
-│                          ▲                                    │
-│                          │                                    │
-│   Orchestrator ──────► HAProxy :9443 (internal frontend)     │
-│     (Rust)                 127.0.0.1 only                    │
-│       │                                                       │
+│   User/Trader ─── HTTPS ───► nginx :443                      │
+│                          (api-perp.ph18.io)                   │
+│                               │                               │
+│                               ▼                               │
+│                     ┌──────────────────┐                      │
+│                     │  Orchestrator    │                      │
+│                     │  (Rust :3000)    │                      │
+│                     │  Order book      │                      │
+│                     │  Auth (XRPL sig) │                      │
+│                     │  Mutex → enclave │                      │
+│                     └────────┬─────────┘                      │
+│                              │ HTTPS (localhost)              │
+│                     ┌────────┼────────┐                      │
+│                     ▼        ▼        ▼                      │
+│                  :9088    :9089    :9090                      │
+│                ┌────────────────────────┐                    │
+│                │  SGX Enclave Instances  │                    │
+│                │  (perp-dex-server)      │                    │
+│                │  TCSNum=1, однопоточные │                    │
+│                │  XRPL multisig 2-of-3   │                    │
+│                └────────────────────────┘                    │
+│                              │                                │
+│   Orchestrator также:                                         │
 │       ├──► XRPL Mainnet (deposit monitor)                    │
-│       └──► Binance/CEX (price feed)                          │
+│       ├──► Binance/CEX (price feed)                          │
+│       └──► P2P gossipsub (order replication)                 │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-**Критично:** Каждый enclave instance однопоточный (TCSNum=1). Один ecall за раз.
-HAProxy **обязателен** даже для localhost — он сериализует запросы в очередь
-и распределяет между instances, предотвращая конфликты.
+**Архитектура:** nginx → Orchestrator → Enclave.
+- **nginx** терминирует TLS, проксирует к Orchestrator (:3000)
+- **Orchestrator** (Rust, multi-threaded) управляет concurrency — сериализует запросы к enclave через Mutex
+- **Enclave** (TCSNum=1, однопоточный) — получает один запрос за раз от Orchestrator
+
+Enclave instances не доступны напрямую из интернета (только localhost).
 
 ---
 
@@ -70,70 +81,72 @@ HAProxy **обязателен** даже для localhost — он сериал
 
 ---
 
-## HAProxy конфигурация
+## nginx конфигурация
 
-```haproxy
-# === Public frontend (users) ===
-frontend perp-public
-    bind *:443 ssl crt /etc/ssl/perp.pem
-    mode http
+```nginx
+# /etc/nginx/sites-available/api-perp.ph18.io
 
-    # Block ALL internal endpoints — users see only public API
-    acl is_internal path_beg /v1/perp/deposit
-    acl is_internal path_beg /v1/perp/price
-    acl is_internal path_beg /v1/perp/liquidate
-    acl is_internal path_beg /v1/perp/funding
-    acl is_internal path_beg /v1/perp/state
-    acl is_internal path_beg /v1/pool/generate
-    acl is_internal path_beg /v1/pool/sign
-    acl is_internal path_beg /v1/pool/frost
-    acl is_internal path_beg /v1/pool/dkg
-    acl is_internal path_beg /v1/pool/load
-    acl is_internal path_beg /v1/pool/unload
-    acl is_internal path_beg /v1/pool/schnorr
-    acl is_internal path_beg /v1/pool/musig
-    acl is_internal path_beg /v1/pool/regenerate
-    acl is_internal path_beg /v1/pool/validate
-    acl is_internal path_beg /v1/pool/recovery
-    http-request deny if is_internal
+server {
+    listen 443 ssl http2;
+    server_name api-perp.ph18.io;
 
-    default_backend enclave_instances
+    ssl_certificate     /etc/letsencrypt/live/api-perp.ph18.io/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/api-perp.ph18.io/privkey.pem;
 
-# === Internal frontend (orchestrator only) ===
-frontend perp-internal
-    bind 127.0.0.1:9443 ssl crt /etc/ssl/perp.pem
-    mode http
-    # No endpoint blocking — orchestrator has full access
-    default_backend enclave_instances
+    # === Public API → Orchestrator (:3000) ===
+    # Orchestrator handles auth, orderbook, concurrency (Mutex → enclave)
 
-# === Backend: enclave instances ===
-# maxconn 1 per server — enclave is single-threaded (TCSNum=1)
-# queue handles waiting requests
-backend enclave_instances
-    mode http
-    balance roundrobin
-    timeout queue 5s
-    timeout server 30s
-    option httpchk GET /v1/pool/status
-    server enclave1 127.0.0.1:9088 maxconn 1 check ssl verify none
-    server enclave2 127.0.0.1:9089 maxconn 1 check ssl verify none
-    server enclave3 127.0.0.1:9090 maxconn 1 check ssl verify none
+    location /v1/perp/balance     { proxy_pass http://127.0.0.1:3000; }
+    location /v1/perp/position/   { proxy_pass http://127.0.0.1:3000; }
+    location /v1/perp/withdraw    { proxy_pass http://127.0.0.1:3000; }
+    location /v1/perp/liquidations/check { proxy_pass http://127.0.0.1:3000; }
+    location /v1/pool/status      { proxy_pass http://127.0.0.1:3000; }
+    location /v1/pool/report      { proxy_pass http://127.0.0.1:3000; }
+    location /v1/attestation/     { proxy_pass http://127.0.0.1:3000; }
+
+    # WebSocket (orderbook, trades, liquidations)
+    location /ws {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 86400;
+    }
+
+    # Block everything else — internal endpoints not exposed
+    location / {
+        return 403;
+    }
+
+    # Standard proxy headers
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    # Rate limiting
+    limit_req zone=perp_api burst=20 nodelay;
+}
+
+# Rate limit zone (in http block)
+# limit_req_zone $binary_remote_addr zone=perp_api:10m rate=10r/s;
 ```
 
-**maxconn 1** — ключевой параметр. HAProxy отправляет только один запрос
-за раз к каждому instance. Остальные ждут в очереди. Это гарантирует
-что однопоточный enclave не получит параллельных ecalls.
+**Concurrency:** Orchestrator использует `tokio::sync::Mutex` для сериализации
+запросов к каждому enclave instance. Это гарантирует что однопоточный enclave
+(TCSNum=1) не получит параллельных ecalls. nginx проксирует только к
+Orchestrator — прямой доступ к enclave невозможен.
 
 ---
 
 ## Компоненты
 
-### 1. HAProxy/nginx (reverse proxy)
+### 1. nginx (reverse proxy)
 
-- Терминирует TLS для пользователей
-- Блокирует internal endpoints
-- Round-robin между enclave instances
-- Health check через `/v1/pool/status`
+- Терминирует TLS для пользователей (Let's Encrypt)
+- Проксирует только public endpoints к Orchestrator (:3000)
+- Блокирует всё остальное (return 403)
+- WebSocket support для real-time данных
 - Rate limiting на пользовательские endpoints
 
 ### 2. SGX Enclave Instances (perp-dex-server)
@@ -147,9 +160,12 @@ backend enclave_instances
 
 ### 3. Orchestrator (Rust binary)
 
-- Один процесс, работает на localhost
-- Подключается **через HAProxy internal frontend** (127.0.0.1:9443), НЕ напрямую к instance
-- HAProxy распределяет и сериализует запросы между instances
+- Один процесс, слушает на :3000 (localhost, за nginx)
+- Подключается **напрямую** к enclave instances (localhost:9088-9090)
+- Сериализует запросы через `tokio::sync::Mutex` (один запрос за раз к каждому instance)
+- XRPL signature auth для пользовательских запросов
+- CLOB orderbook с price-time priority
+- libp2p gossipsub для репликации order flow между операторами
 - Функции:
   - **Price feed**: Binance API → enclave price update (каждые 5 сек)
   - **Deposit monitor**: XRPL ledger → enclave deposit credit
@@ -173,13 +189,13 @@ backend enclave_instances
 iptables -A INPUT -p tcp --dport 9088:9099 -s 127.0.0.1 -j ACCEPT
 iptables -A INPUT -p tcp --dport 9088:9099 -j DROP
 
-# HAProxy — публичный
+# nginx — публичный
 iptables -A INPUT -p tcp --dport 443 -j ACCEPT
 
-# Orchestrator — не слушает портов, только исходящие:
-#   → localhost:9088 (enclave)
-#   → XRPL nodes (port 51234)
-#   → Binance API (port 443)
+# Orchestrator — слушает :3000 только localhost
+iptables -A INPUT -p tcp --dport 3000 -s 127.0.0.1 -j ACCEPT
+iptables -A INPUT -p tcp --dport 3000 -j DROP
+# Исходящие: localhost:9088-9090, XRPL (51234), Binance (443)
 ```
 
 ---
@@ -188,7 +204,8 @@ iptables -A INPUT -p tcp --dport 443 -j ACCEPT
 
 | Порт | Сервис | Доступ |
 |------|--------|--------|
-| 443 | HAProxy (public API) | Internet |
+| 443 | nginx (public API) | Internet |
+| 3000 | Orchestrator | localhost only |
 | 9088 | Enclave instance 1 | localhost only |
 | 9089 | Enclave instance 2 | localhost only |
 | 9090 | Enclave instance 3 | localhost only |
