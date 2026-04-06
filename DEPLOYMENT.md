@@ -1,0 +1,182 @@
+# Deployment Guide
+
+## Architecture Overview
+
+```
+Internet
+   │
+   ▼
+nginx :443 (api-perp.ph18.io)      ← only entry point for users
+   │
+   ▼
+Orchestrator :3000 (localhost)      ← trading engine, auth, orderbook
+   │
+   ▼
+SGX Enclave :9088 (localhost)       ← private keys, margin engine, signing
+```
+
+**Everything behind nginx is localhost-only. Users never touch the Orchestrator or Enclave directly.**
+
+---
+
+## What is exposed externally (via nginx)
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| GET | `/v1/perp/balance` | Yes | User balance and positions |
+| POST | `/v1/perp/position/open` | Yes | Open position |
+| POST | `/v1/perp/position/close` | Yes | Close position |
+| POST | `/v1/perp/withdraw` | Yes | Withdraw (margin check + SGX signing) |
+| GET | `/v1/perp/liquidations/check` | No | View liquidatable positions |
+| GET | `/v1/pool/status` | No | Enclave health |
+| POST | `/v1/attestation/quote` | No | DCAP remote attestation |
+| WS | `/ws` | No | Real-time trades, orderbook, ticker |
+
+**Everything else returns 403.** nginx uses a whitelist — only explicitly listed
+endpoints are proxied. If a new endpoint is added to the enclave, it is blocked
+by default until added to the nginx config.
+
+---
+
+## What is NOT exposed and why
+
+| Service | Port | Accessible from | Why it must be closed |
+|---------|------|-----------------|----------------------|
+| **SGX Enclave** | 9088 | localhost only | Holds private keys. Direct access allows calling deposit/withdraw without any checks. |
+| **Orchestrator** | 3000 | localhost only | Bypasses nginx whitelist and rate limiting. Must only be reached via nginx. |
+
+**iptables rules:**
+```bash
+# Enclave — localhost only
+iptables -A INPUT -p tcp --dport 9088 -s 127.0.0.1 -j ACCEPT
+iptables -A INPUT -p tcp --dport 9088 -j DROP
+
+# Orchestrator — localhost only (nginx proxies to it)
+iptables -A INPUT -p tcp --dport 3000 -s 127.0.0.1 -j ACCEPT
+iptables -A INPUT -p tcp --dport 3000 -j DROP
+
+# nginx — public
+iptables -A INPUT -p tcp --dport 443 -j ACCEPT
+```
+
+---
+
+## What the Orchestrator does internally
+
+The Orchestrator runs background tasks that call the Enclave on localhost.
+No external service calls these endpoints — the Orchestrator does it automatically:
+
+| Task | Interval | Enclave call | Description |
+|------|----------|--------------|-------------|
+| Price feed | 5 sec | `POST /v1/perp/price` | Fetches XRP/USDT from Binance, pushes to enclave |
+| Deposit monitor | 1 sec | `POST /v1/perp/deposit` | Watches XRPL ledger for payments to escrow |
+| Liquidation scan | 10 sec | `GET /v1/perp/liquidations/check` + `POST /v1/perp/liquidate` | Finds and closes undercollateralized positions |
+| Funding rate | 8 hours | `POST /v1/perp/funding/apply` | Applies funding to all open positions |
+| State save | 5 min | `POST /v1/perp/state/save` | Seals state to disk for crash recovery |
+
+**These are internal calls (localhost:9088). They are never exposed to users.**
+
+---
+
+## How to start
+
+### Prerequisites
+
+- Server with Intel SGX (Hetzner bare metal or Azure DCsv3)
+- SGX enclave binary (`enclave.signed.so`) built and deployed
+- nginx installed
+- Rust toolchain (for building orchestrator)
+
+### Step 1: Start the Enclave
+
+```bash
+cd /path/to/EthSignerEnclave
+./app -p 9088 -b 127.0.0.1
+```
+
+The enclave listens on `127.0.0.1:9088` — **not** on `0.0.0.0`.
+
+### Step 2: Start the Orchestrator
+
+```bash
+cd /path/to/orchestrator
+cargo build --release
+
+./target/release/perp-dex-orchestrator \
+  --enclave-url https://localhost:9088/v1 \
+  --api-listen 127.0.0.1:3000 \
+  --xrpl-url https://s.altnet.rippletest.net:51234 \
+  --priority 0
+```
+
+Key flags:
+| Flag | Value | Description |
+|------|-------|-------------|
+| `--enclave-url` | `https://localhost:9088/v1` | **Must point to the enclave, NOT the orchestrator** |
+| `--api-listen` | `127.0.0.1:3000` | Bind to localhost only (nginx proxies to it) |
+| `--priority` | `0` | Sequencer election priority (0=leader, 1-2=validators) |
+| `--escrow-address` | `rXXX...` | XRPL escrow account to monitor for deposits |
+
+### Step 3: Configure nginx
+
+```bash
+sudo cp nginx/api-perp.ph18.io /etc/nginx/sites-available/
+sudo ln -s /etc/nginx/sites-available/api-perp.ph18.io /etc/nginx/sites-enabled/
+sudo certbot --nginx -d api-perp.ph18.io
+sudo nginx -t && sudo nginx -s reload
+```
+
+### Step 4: Verify
+
+```bash
+# From outside — should work
+curl https://api-perp.ph18.io/v1/pool/status
+
+# From outside — should return 403 (internal endpoint blocked by nginx)
+curl https://api-perp.ph18.io/v1/perp/deposit
+
+# Enclave port should be unreachable from outside
+curl https://your-server:9088/v1/pool/status   # should timeout/refuse
+```
+
+---
+
+## Common mistakes
+
+### "401 Unauthorized on price update"
+
+```
+ERROR perp_dex_orchestrator: price update failed: HTTP status client error
+(401 Unauthorized) for url (http://94.130.18.162:3000/perp/price)
+```
+
+**Cause:** `--enclave-url` points to the Orchestrator (port 3000) instead of the Enclave (port 9088). The Orchestrator calls itself, hits its own auth middleware, and gets rejected.
+
+**Fix:**
+```bash
+# Wrong:
+--enclave-url http://94.130.18.162:3000
+
+# Correct:
+--enclave-url https://localhost:9088/v1
+```
+
+### "Connection refused on port 9088 from remote machine"
+
+**This is correct behavior.** The enclave only listens on `127.0.0.1`. It is not accessible from outside. Only the Orchestrator on the same machine can reach it.
+
+### "Why can't I call /v1/perp/deposit from my frontend?"
+
+Because `/v1/perp/deposit` is an internal endpoint. Only the Orchestrator calls it when it detects an XRPL deposit on the escrow account. Users deposit by sending an XRPL Payment to the escrow address — the Orchestrator detects it automatically and credits the balance in the enclave.
+
+---
+
+## Port summary
+
+| Port | Service | Bind address | Accessible from |
+|------|---------|-------------|-----------------|
+| 443 | nginx | 0.0.0.0 | Internet (users) |
+| 3000 | Orchestrator | 127.0.0.1 | localhost only (nginx) |
+| 9088 | SGX Enclave | 127.0.0.1 | localhost only (orchestrator) |
+| 4001 | P2P gossipsub | 0.0.0.0 | Other operators only |
+| 8085-8087 | Phoenix PM | 127.0.0.1 | localhost only (do not touch) |
