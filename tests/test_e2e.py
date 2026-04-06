@@ -55,9 +55,13 @@ def make_wallet():
     pubkey_hex = compressed.hex()
 
     # Derive XRPL address: SHA256 → RIPEMD160 → Base58Check
-    import hashlib
     sha256 = hashlib.sha256(compressed).digest()
-    ripemd = hashlib.new('ripemd160', sha256).digest()
+    try:
+        ripemd = hashlib.new('ripemd160', sha256).digest()
+    except ValueError:
+        # OpenSSL 3.x disables RIPEMD160 — use pycryptodome
+        from Crypto.Hash import RIPEMD160
+        ripemd = RIPEMD160.new(sha256).digest()
 
     # Base58Check with XRPL alphabet
     payload = b'\x00' + ripemd
@@ -142,7 +146,11 @@ def enclave_post(path, data):
         timeout=TIMEOUT,
         verify=False,  # self-signed cert
     )
-    return r.json()
+    # Enclave may prefix error with "Error NNN: ...\n" before JSON
+    text = r.text
+    if text.startswith("Error"):
+        text = text.split("\n", 1)[-1] if "\n" in text else text
+    return json.loads(text)
 
 
 # ── Test framework ──────────────────────────────────────────────
@@ -321,8 +329,8 @@ def test_cancel_all():
 
 def test_enclave_pool_status():
     """Enclave pool status endpoint."""
-    r = requests.get(f"{ENCLAVE_URL}/pool/status", timeout=TIMEOUT, verify=False)
-    assert r.status_code == 200
+    r = enclave_get("/pool/status")
+    assert r["status"] == "success" or "accounts" in r
 
 
 def test_enclave_deposit():
@@ -330,7 +338,7 @@ def test_enclave_deposit():
     r = enclave_post("/perp/deposit", {
         "user_id": "rE2ETestUser",
         "amount": "1000.00000000",
-        "xrpl_tx_hash": f"e2e_test_{int(time.time())}",
+        "xrpl_tx_hash": hashlib.sha256(f"e2e_test_{int(time.time())}".encode()).hexdigest(),
     })
     assert r["status"] == "success"
 
@@ -357,22 +365,25 @@ def test_enclave_open_position():
     assert r["status"] == "success"
 
 
+def enclave_get(path):
+    """GET from enclave directly."""
+    r = requests.get(f"{ENCLAVE_URL}{path}", timeout=TIMEOUT, verify=False)
+    text = r.text
+    if text.startswith("Error"):
+        text = text.split("\n", 1)[-1] if "\n" in text else text
+    return json.loads(text)
+
+
 def test_enclave_get_balance():
     """Get balance from enclave."""
-    r = requests.get(
-        f"{ENCLAVE_URL}/perp/balance?user_id=rE2ETestUser",
-        timeout=TIMEOUT, verify=False,
-    ).json()
+    r = enclave_get("/perp/balance?user_id=rE2ETestUser")
     assert r["status"] == "success"
     assert "data" in r
 
 
 def test_enclave_check_liquidations():
     """Check liquidations in enclave."""
-    r = requests.get(
-        f"{ENCLAVE_URL}/perp/liquidations/check",
-        timeout=TIMEOUT, verify=False,
-    ).json()
+    r = enclave_get("/perp/liquidations/check")
     assert r["status"] == "success"
 
 
