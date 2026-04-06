@@ -123,6 +123,21 @@ pub fn verify_request(
     })
 }
 
+/// Derive XRPL r-address from compressed secp256k1 public key bytes.
+/// Used in tests and utilities.
+pub fn pubkey_to_xrpl_address(pubkey_bytes: &[u8]) -> String {
+    let sha256_hash = Sha256::digest(pubkey_bytes);
+    let ripemd_hash = Ripemd160::digest(&sha256_hash);
+    let mut payload = vec![0x00u8];
+    payload.extend_from_slice(&ripemd_hash);
+    let checksum = Sha256::digest(&Sha256::digest(&payload));
+    payload.extend_from_slice(&checksum[..4]);
+    const XRPL_ALPHABET: &str = "rpshnaf39wBUDNEGHJKLM4PQRST7VWXYZ2bcdeCg65jkm8oFqi1tuvAxyz";
+    let alpha_bytes: &[u8; 58] = XRPL_ALPHABET.as_bytes().try_into().unwrap();
+    let alpha = bs58::Alphabet::new(alpha_bytes).unwrap();
+    bs58::encode(&payload).with_alphabet(&alpha).into_string()
+}
+
 /// Axum middleware: verify auth headers on mutating endpoints.
 /// GET requests to public market data are exempt.
 pub async fn auth_middleware(request: Request, next: Next) -> Response {
@@ -209,5 +224,182 @@ pub async fn auth_middleware(request: Request, next: Next) -> Response {
             )
                 .into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderMap;
+    use k256::ecdsa::{signature::hazmat::PrehashSigner, SigningKey};
+    use k256::elliptic_curve::rand_core::OsRng;
+
+    /// Helper: generate a test keypair and derive XRPL address.
+    fn test_keypair() -> (SigningKey, VerifyingKey, String, String) {
+        let sk = SigningKey::random(&mut OsRng);
+        let vk = *sk.verifying_key();
+        let pubkey_bytes = vk.to_sec1_bytes();
+        let pubkey_hex = hex::encode(&pubkey_bytes);
+        let address = pubkey_to_xrpl_address(&pubkey_bytes);
+        (sk, vk, pubkey_hex, address)
+    }
+
+    /// Helper: sign body and build auth headers.
+    fn sign_body(sk: &SigningKey, pubkey_hex: &str, address: &str, body: &[u8]) -> HeaderMap {
+        let hash = Sha256::digest(body);
+        let (sig, _): (Signature, _) = sk.sign_prehash(&hash).unwrap();
+        let sig_der = sig.to_der();
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-xrpl-address", address.parse().unwrap());
+        headers.insert("x-xrpl-publickey", pubkey_hex.parse().unwrap());
+        headers.insert("x-xrpl-signature", hex::encode(sig_der.as_bytes()).parse().unwrap());
+        headers
+    }
+
+    /// Helper: sign URI path (for GET requests).
+    fn sign_uri(sk: &SigningKey, pubkey_hex: &str, address: &str, uri: &str) -> HeaderMap {
+        sign_body(sk, pubkey_hex, address, uri.as_bytes())
+    }
+
+    #[test]
+    fn valid_post_signature_passes() {
+        let (sk, _, pubkey_hex, address) = test_keypair();
+        let body = b"{\"user_id\":\"test\",\"side\":\"buy\"}";
+        let headers = sign_body(&sk, &pubkey_hex, &address, body);
+        let result = verify_request(&headers, body, "/v1/orders");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().xrpl_address, address);
+    }
+
+    #[test]
+    fn valid_get_signature_passes() {
+        let (sk, _, pubkey_hex, address) = test_keypair();
+        let uri = "/v1/orders?user_id=rTest123";
+        // GET: empty body, signs URI
+        let headers = sign_uri(&sk, &pubkey_hex, &address, uri);
+        let result = verify_request(&headers, &[], uri);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn missing_address_header_fails() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-xrpl-publickey", "aa".repeat(33).parse().unwrap());
+        headers.insert("x-xrpl-signature", "deadbeef".parse().unwrap());
+        let result = verify_request(&headers, b"body", "/");
+        assert_eq!(result.unwrap_err(), "missing X-XRPL-Address header");
+    }
+
+    #[test]
+    fn missing_pubkey_header_fails() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-xrpl-address", "rTest12345678901234567890".parse().unwrap());
+        headers.insert("x-xrpl-signature", "deadbeef".parse().unwrap());
+        let result = verify_request(&headers, b"body", "/");
+        assert_eq!(result.unwrap_err(), "missing X-XRPL-PublicKey header");
+    }
+
+    #[test]
+    fn missing_signature_header_fails() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-xrpl-address", "rTest12345678901234567890".parse().unwrap());
+        headers.insert("x-xrpl-publickey", "aa".repeat(33).parse().unwrap());
+        let result = verify_request(&headers, b"body", "/");
+        assert_eq!(result.unwrap_err(), "missing X-XRPL-Signature header");
+    }
+
+    #[test]
+    fn invalid_address_format_rejected() {
+        let (sk, _, pubkey_hex, _) = test_keypair();
+        let body = b"test";
+        let headers = sign_body(&sk, &pubkey_hex, "xNotAnAddress", body);
+        let result = verify_request(&headers, body, "/");
+        assert_eq!(result.unwrap_err(), "invalid XRPL address format");
+    }
+
+    #[test]
+    fn address_too_short_rejected() {
+        let (sk, _, pubkey_hex, _) = test_keypair();
+        let headers = sign_body(&sk, &pubkey_hex, "rShort", b"test");
+        let result = verify_request(&headers, b"test", "/");
+        assert_eq!(result.unwrap_err(), "invalid XRPL address format");
+    }
+
+    #[test]
+    fn wrong_pubkey_length_rejected() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-xrpl-address", "rTest12345678901234567890".parse().unwrap());
+        headers.insert("x-xrpl-publickey", "aabb".parse().unwrap()); // too short
+        headers.insert("x-xrpl-signature", "deadbeef".parse().unwrap());
+        let result = verify_request(&headers, b"body", "/");
+        assert_eq!(result.unwrap_err(), "invalid public key length (expected 66 hex chars)");
+    }
+
+    #[test]
+    fn address_mismatch_rejected() {
+        let (sk, _, pubkey_hex, _address) = test_keypair();
+        let body = b"test";
+        // Use a different (but valid-format) address
+        let fake_address = "rFakeAddress1234567890123";
+        let headers = sign_body(&sk, &pubkey_hex, fake_address, body);
+        let result = verify_request(&headers, body, "/");
+        assert!(result.unwrap_err().starts_with("address mismatch"));
+    }
+
+    #[test]
+    fn wrong_signature_rejected() {
+        let (sk, _, pubkey_hex, address) = test_keypair();
+        let body = b"correct body";
+        let headers = sign_body(&sk, &pubkey_hex, &address, b"different body");
+        // Verify with correct body but signature was for different body
+        let result = verify_request(&headers, body, "/");
+        assert_eq!(result.unwrap_err(), "signature verification failed");
+    }
+
+    #[test]
+    fn invalid_signature_hex_rejected() {
+        let (_, _, pubkey_hex, address) = test_keypair();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-xrpl-address", address.parse().unwrap());
+        headers.insert("x-xrpl-publickey", pubkey_hex.parse().unwrap());
+        headers.insert("x-xrpl-signature", "not_hex!!".parse().unwrap());
+        let result = verify_request(&headers, b"body", "/");
+        assert_eq!(result.unwrap_err(), "invalid signature hex");
+    }
+
+    #[test]
+    fn invalid_der_signature_rejected() {
+        let (_, _, pubkey_hex, address) = test_keypair();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-xrpl-address", address.parse().unwrap());
+        headers.insert("x-xrpl-publickey", pubkey_hex.parse().unwrap());
+        headers.insert("x-xrpl-signature", "deadbeef".parse().unwrap());
+        let result = verify_request(&headers, b"body", "/");
+        assert_eq!(result.unwrap_err(), "invalid DER signature");
+    }
+
+    #[test]
+    fn xrpl_address_derivation_deterministic() {
+        let (_, _, pubkey_hex, address) = test_keypair();
+        let pubkey_bytes = hex::decode(&pubkey_hex).unwrap();
+        let derived = pubkey_to_xrpl_address(&pubkey_bytes);
+        assert_eq!(derived, address);
+        // Derive again — should be identical
+        assert_eq!(pubkey_to_xrpl_address(&pubkey_bytes), address);
+    }
+
+    #[test]
+    fn xrpl_address_starts_with_r() {
+        let (_, _, pubkey_hex, address) = test_keypair();
+        assert!(address.starts_with('r'));
+        assert!(address.len() >= 25 && address.len() <= 35);
+    }
+
+    #[test]
+    fn different_keys_different_addresses() {
+        let (_, _, _, addr1) = test_keypair();
+        let (_, _, _, addr2) = test_keypair();
+        assert_ne!(addr1, addr2);
     }
 }

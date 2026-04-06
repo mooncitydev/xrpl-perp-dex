@@ -299,6 +299,145 @@ mod tests {
     async fn steps_down_on_higher_priority_announce() {
         let (out_tx, _out_rx) = mpsc::channel(10);
         let (_in_tx, in_rx) = mpsc::channel(10);
+        let (role_tx, mut _role_rx) = watch::channel(Role::Sequencer);
+
+        let config = ElectionConfig {
+            our_peer_id: "B".into(),
+            our_priority: 1,
+            heartbeat_interval: Duration::from_secs(5),
+            heartbeat_timeout: Duration::from_secs(15),
+        };
+
+        let mut state = ElectionState::new(config, out_tx, in_rx, role_tx);
+        state.role = Role::Sequencer;
+        state.startup_grace = false;
+
+        state.handle_message(ElectionMessage::LeaderAnnounce {
+            peer_id: "A".into(),
+            priority: 0,
+        });
+
+        assert_eq!(state.role, Role::Validator);
+    }
+
+    #[tokio::test]
+    async fn ignores_lower_priority_announce() {
+        let (out_tx, _out_rx) = mpsc::channel(10);
+        let (_in_tx, in_rx) = mpsc::channel(10);
+        let (role_tx, _role_rx) = watch::channel(Role::Sequencer);
+
+        let config = ElectionConfig {
+            our_peer_id: "A".into(),
+            our_priority: 0,
+            heartbeat_interval: Duration::from_secs(5),
+            heartbeat_timeout: Duration::from_secs(15),
+        };
+
+        let mut state = ElectionState::new(config, out_tx, in_rx, role_tx);
+        state.startup_grace = false;
+
+        // Lower priority (higher number) tries to claim leadership
+        state.handle_message(ElectionMessage::LeaderAnnounce {
+            peer_id: "C".into(),
+            priority: 2,
+        });
+
+        // Should remain sequencer
+        assert_eq!(state.role, Role::Sequencer);
+    }
+
+    #[tokio::test]
+    async fn ignores_own_heartbeat() {
+        let (out_tx, _out_rx) = mpsc::channel(10);
+        let (_in_tx, in_rx) = mpsc::channel(10);
+        let (role_tx, _role_rx) = watch::channel(Role::Validator);
+
+        let config = ElectionConfig {
+            our_peer_id: "B".into(),
+            our_priority: 1,
+            heartbeat_interval: Duration::from_secs(5),
+            heartbeat_timeout: Duration::from_secs(15),
+        };
+
+        let mut state = ElectionState::new(config, out_tx, in_rx, role_tx);
+        state.startup_grace = false;
+
+        // Own heartbeat should be ignored
+        state.handle_message(ElectionMessage::Heartbeat {
+            peer_id: "B".into(),
+            priority: 1,
+            seq_num: 1,
+        });
+
+        // Leader should still be None (not self)
+        assert!(state.leader.is_none() || state.leader.as_ref().unwrap().0 != "B");
+    }
+
+    #[tokio::test]
+    async fn heartbeat_resets_timeout() {
+        let (out_tx, _out_rx) = mpsc::channel(10);
+        let (_in_tx, in_rx) = mpsc::channel(10);
+        let (role_tx, _role_rx) = watch::channel(Role::Validator);
+
+        let config = ElectionConfig {
+            our_peer_id: "B".into(),
+            our_priority: 1,
+            heartbeat_interval: Duration::from_secs(5),
+            heartbeat_timeout: Duration::from_secs(15),
+        };
+
+        let mut state = ElectionState::new(config, out_tx, in_rx, role_tx);
+        state.startup_grace = false;
+        state.leader = Some(("A".into(), 0));
+        // Simulate old heartbeat
+        state.last_heartbeat = Instant::now() - Duration::from_secs(10);
+
+        // Receive heartbeat from leader
+        state.handle_message(ElectionMessage::Heartbeat {
+            peer_id: "A".into(),
+            priority: 0,
+            seq_num: 5,
+        });
+
+        // Heartbeat should be recent now
+        assert!(state.last_heartbeat.elapsed() < Duration::from_secs(1));
+        assert_eq!(state.role, Role::Validator);
+    }
+
+    #[tokio::test]
+    async fn timeout_promotes_to_sequencer() {
+        let (out_tx, mut out_rx) = mpsc::channel(10);
+        let (_in_tx, in_rx) = mpsc::channel(10);
+        let (role_tx, mut role_rx) = watch::channel(Role::Validator);
+
+        let config = ElectionConfig {
+            our_peer_id: "B".into(),
+            our_priority: 1,
+            heartbeat_interval: Duration::from_secs(5),
+            heartbeat_timeout: Duration::from_millis(50), // short for test
+        };
+
+        let mut state = ElectionState::new(config, out_tx, in_rx, role_tx);
+        state.startup_grace = false;
+        state.leader = Some(("A".into(), 0));
+        // Set last heartbeat to long ago
+        state.last_heartbeat = Instant::now() - Duration::from_secs(1);
+
+        state.check_timeout();
+
+        assert_eq!(state.role, Role::Sequencer);
+        assert_eq!(state.leader.as_ref().unwrap().0, "B");
+
+        // Should have sent LeaderAnnounce
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let msg = out_rx.try_recv();
+        assert!(msg.is_ok());
+    }
+
+    #[tokio::test]
+    async fn role_change_sent_via_watch() {
+        let (out_tx, _out_rx) = mpsc::channel(10);
+        let (_in_tx, in_rx) = mpsc::channel(10);
         let (role_tx, mut role_rx) = watch::channel(Role::Sequencer);
 
         let config = ElectionConfig {
@@ -309,16 +448,58 @@ mod tests {
         };
 
         let mut state = ElectionState::new(config, out_tx, in_rx, role_tx);
-        // Force to sequencer for test
         state.role = Role::Sequencer;
         state.startup_grace = false;
 
-        // Receive LeaderAnnounce from higher-priority node
+        // Trigger role change
         state.handle_message(ElectionMessage::LeaderAnnounce {
             peer_id: "A".into(),
             priority: 0,
         });
 
+        assert_eq!(*role_rx.borrow(), Role::Validator);
+    }
+
+    #[tokio::test]
+    async fn tie_breaking_by_peer_id() {
+        let (out_tx, _out_rx) = mpsc::channel(10);
+        let (_in_tx, in_rx) = mpsc::channel(10);
+        let (role_tx, _role_rx) = watch::channel(Role::Sequencer);
+
+        let config = ElectionConfig {
+            our_peer_id: "Z_high_peer_id".into(),
+            our_priority: 1,
+            heartbeat_interval: Duration::from_secs(5),
+            heartbeat_timeout: Duration::from_secs(15),
+        };
+
+        let mut state = ElectionState::new(config, out_tx, in_rx, role_tx);
+        state.role = Role::Sequencer;
+        state.startup_grace = false;
+
+        // Same priority but lower peer_id → they win
+        state.handle_message(ElectionMessage::LeaderAnnounce {
+            peer_id: "A_low_peer_id".into(),
+            priority: 1,
+        });
+
         assert_eq!(state.role, Role::Validator);
+        assert_eq!(state.leader.as_ref().unwrap().0, "A_low_peer_id");
+    }
+
+    #[test]
+    fn election_message_serialization() {
+        let msg = ElectionMessage::Heartbeat {
+            peer_id: "A".into(),
+            priority: 0,
+            seq_num: 42,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"heartbeat\""));
+        let decoded: ElectionMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ElectionMessage::Heartbeat { seq_num, .. } => assert_eq!(seq_num, 42),
+            _ => panic!("wrong variant"),
+        }
     }
 }

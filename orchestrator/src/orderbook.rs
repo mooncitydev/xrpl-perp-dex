@@ -610,4 +610,89 @@ mod tests {
         assert_eq!(asks.len(), 1);
         assert_eq!(asks[0].0, FP8::from_f64(0.56));
     }
+
+    #[test]
+    fn price_time_priority() {
+        let mut ob = book();
+        // Two buys at same price — first should fill first
+        ob.submit_order("alice".into(), Side::Long, OrderType::Limit, FP8::from_f64(0.55), FP8::from_f64(100.0), 5, TimeInForce::Gtc, false, None).unwrap();
+        ob.submit_order("bob".into(), Side::Long, OrderType::Limit, FP8::from_f64(0.55), FP8::from_f64(100.0), 5, TimeInForce::Gtc, false, None).unwrap();
+
+        // Sell 50 — should match Alice (first in queue)
+        let (_, trades) = ob.submit_order("charlie".into(), Side::Short, OrderType::Limit, FP8::from_f64(0.55), FP8::from_f64(50.0), 5, TimeInForce::Gtc, false, None).unwrap();
+
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].maker_user_id, "alice");
+    }
+
+    #[test]
+    fn partial_fill_tracking() {
+        let mut ob = book();
+        ob.submit_order("alice".into(), Side::Long, OrderType::Limit, FP8::from_f64(0.55), FP8::from_f64(100.0), 5, TimeInForce::Gtc, false, None).unwrap();
+
+        // Partial fill: sell 30
+        let (_, trades) = ob.submit_order("bob".into(), Side::Short, OrderType::Limit, FP8::from_f64(0.55), FP8::from_f64(30.0), 5, TimeInForce::Gtc, false, None).unwrap();
+        assert_eq!(trades.len(), 1);
+
+        // Alice's remaining: 70
+        let orders = ob.user_orders("alice");
+        assert_eq!(orders.len(), 1);
+        assert_eq!(orders[0].remaining(), FP8::from_f64(70.0));
+        assert_eq!(orders[0].status, OrderStatus::PartiallyFilled);
+    }
+
+    #[test]
+    fn cancel_all_for_user() {
+        let mut ob = book();
+        ob.submit_order("alice".into(), Side::Long, OrderType::Limit, FP8::from_f64(0.54), FP8::from_f64(100.0), 5, TimeInForce::Gtc, false, None).unwrap();
+        ob.submit_order("alice".into(), Side::Short, OrderType::Limit, FP8::from_f64(0.56), FP8::from_f64(50.0), 5, TimeInForce::Gtc, false, None).unwrap();
+        ob.submit_order("bob".into(), Side::Long, OrderType::Limit, FP8::from_f64(0.53), FP8::from_f64(200.0), 5, TimeInForce::Gtc, false, None).unwrap();
+
+        let cancelled = ob.cancel_all("alice");
+        assert_eq!(cancelled.len(), 2);
+        assert_eq!(ob.user_orders("alice").len(), 0);
+        assert_eq!(ob.user_orders("bob").len(), 1); // Bob's order untouched
+    }
+
+    #[test]
+    fn cancel_nonexistent_order_fails() {
+        let mut ob = book();
+        assert!(ob.cancel_order(999).is_err());
+    }
+
+    #[test]
+    fn best_bid_ask_mid() {
+        let mut ob = book();
+        assert_eq!(ob.best_bid(), None);
+        assert_eq!(ob.best_ask(), None);
+        assert_eq!(ob.mid_price(), None);
+
+        ob.submit_order("a".into(), Side::Long, OrderType::Limit, FP8::from_f64(0.54), FP8::from_f64(100.0), 5, TimeInForce::Gtc, false, None).unwrap();
+        ob.submit_order("b".into(), Side::Short, OrderType::Limit, FP8::from_f64(0.56), FP8::from_f64(100.0), 5, TimeInForce::Gtc, false, None).unwrap();
+
+        assert_eq!(ob.best_bid(), Some(FP8::from_f64(0.54)));
+        assert_eq!(ob.best_ask(), Some(FP8::from_f64(0.56)));
+        assert_eq!(ob.mid_price(), Some(FP8::from_f64(0.55)));
+    }
+
+    #[test]
+    fn trade_ids_increment() {
+        let mut ob = book();
+        ob.submit_order("alice".into(), Side::Long, OrderType::Limit, FP8::from_f64(0.55), FP8::from_f64(100.0), 5, TimeInForce::Gtc, false, None).unwrap();
+        ob.submit_order("bob".into(), Side::Long, OrderType::Limit, FP8::from_f64(0.56), FP8::from_f64(100.0), 5, TimeInForce::Gtc, false, None).unwrap();
+
+        let (_, trades1) = ob.submit_order("charlie".into(), Side::Short, OrderType::Limit, FP8::from_f64(0.55), FP8::from_f64(200.0), 5, TimeInForce::Gtc, false, None).unwrap();
+
+        // Should produce 2 trades (match bob@0.56 first, then alice@0.55)
+        assert_eq!(trades1.len(), 2);
+        assert!(trades1[0].trade_id < trades1[1].trade_id, "trade IDs should increment");
+    }
+
+    #[test]
+    fn order_ids_increment() {
+        let mut ob = book();
+        let (o1, _) = ob.submit_order("a".into(), Side::Long, OrderType::Limit, FP8::from_f64(0.55), FP8::from_f64(100.0), 5, TimeInForce::Gtc, false, None).unwrap();
+        let (o2, _) = ob.submit_order("b".into(), Side::Short, OrderType::Limit, FP8::from_f64(0.56), FP8::from_f64(100.0), 5, TimeInForce::Gtc, false, None).unwrap();
+        assert!(o2.id > o1.id, "order IDs should increment");
+    }
 }

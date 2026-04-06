@@ -246,4 +246,93 @@ mod tests {
         assert_eq!((a * b).to_string(), "3.00000000");
         assert_eq!((a / b).to_string(), "0.75000000");
     }
+
+    #[test]
+    fn fp8_subtraction() {
+        let a = FP8::from_f64(5.0);
+        let b = FP8::from_f64(3.0);
+        assert_eq!((a - b).to_string(), "2.00000000");
+        assert_eq!((b - a).to_string(), "-2.00000000");
+    }
+
+    #[test]
+    fn fp8_negation() {
+        let a = FP8::from_f64(1.5);
+        assert_eq!((-a).to_string(), "-1.50000000");
+        assert_eq!((-(-a)).to_string(), "1.50000000");
+    }
+
+    #[test]
+    fn fp8_abs() {
+        assert_eq!(FP8::from_f64(-3.5).abs(), FP8::from_f64(3.5));
+        assert_eq!(FP8::from_f64(3.5).abs(), FP8::from_f64(3.5));
+        assert_eq!(FP8::ZERO.abs(), FP8::ZERO);
+    }
+
+    #[test]
+    fn fp8_raw_roundtrip() {
+        let v = FP8(123456789);
+        assert_eq!(v.raw(), 123456789);
+        assert_eq!(FP8::ZERO.raw(), 0);
+    }
+
+    #[test]
+    fn fp8_from_f64_precision() {
+        // Small value
+        assert_eq!(FP8::from_f64(0.00000001).raw(), 1);
+        // Large value
+        assert_eq!(FP8::from_f64(1000.0).raw(), 100000000000);
+    }
+
+    #[test]
+    fn fp8_comparison() {
+        let a = FP8::from_f64(0.55);
+        let b = FP8::from_f64(0.56);
+        assert!(a < b);
+        assert!(b > a);
+        assert_eq!(a, a);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn fp8_serde_roundtrip() {
+        let val = FP8::from_f64(1.23456789);
+        let json = serde_json::to_string(&val).unwrap();
+        let decoded: FP8 = serde_json::from_str(&json).unwrap();
+        assert_eq!(val, decoded);
+    }
+
+    #[test]
+    fn fp8_parse_short_fraction() {
+        // "1.5" should work (not requiring 8 decimal places)
+        assert_eq!("1.5".parse::<FP8>().unwrap(), FP8(150000000));
+        assert_eq!("0.1".parse::<FP8>().unwrap(), FP8(10000000));
+    }
+
+    #[test]
+    fn fp8_parse_integer() {
+        assert_eq!("42".parse::<FP8>().unwrap(), FP8(4200000000));
+    }
+
+    #[test]
+    fn side_from_str() {
+        assert_eq!("long".parse::<Side>().unwrap(), Side::Long);
+        assert_eq!("short".parse::<Side>().unwrap(), Side::Short);
+        assert_eq!("LONG".parse::<Side>().unwrap(), Side::Long);
+        assert_eq!("SHORT".parse::<Side>().unwrap(), Side::Short);
+        assert!("invalid".parse::<Side>().is_err());
+    }
+
+    #[test]
+    fn side_display() {
+        assert_eq!(format!("{}", Side::Long), "long");
+        assert_eq!(format!("{}", Side::Short), "short");
+    }
+
+    #[test]
+    fn float_to_fp8_string_helper() {
+        assert_eq!(float_to_fp8_string(0.55), "0.55000000");
+        assert_eq!(float_to_fp8_string(100.0), "100.00000000");
+        assert_eq!(float_to_fp8_string(0.0), "0.00000000");
+    }
 }
