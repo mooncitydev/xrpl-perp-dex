@@ -18,6 +18,7 @@ const FP8_SCALE: i64 = 100_000_000; // 10^8
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct FP8(pub i64);
 
+#[allow(dead_code)]
 impl FP8 {
     pub const ZERO: FP8 = FP8(0);
     pub const ONE: FP8 = FP8(FP8_SCALE);
@@ -166,6 +167,7 @@ impl FromStr for Side {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[allow(dead_code)]
 pub enum PositionStatus {
     Open,
     Closed,
@@ -185,6 +187,7 @@ impl fmt::Display for PositionStatus {
 // ── Structs matching enclave JSON responses ─────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct Position {
     pub position_id: u64,
     pub user_id: String,
@@ -197,6 +200,7 @@ pub struct Position {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct Balance {
     pub available: FP8,
     pub locked: FP8,
@@ -204,6 +208,7 @@ pub struct Balance {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct UserBalance {
     pub user_id: String,
     pub balance: Balance,

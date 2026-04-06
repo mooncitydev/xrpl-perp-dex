@@ -14,8 +14,7 @@ use anyhow::{bail, Context, Result};
 use ripemd::Ripemd160;
 use sha2::{Digest, Sha256, Sha512};
 
-use crate::enclave_client::{EnclaveClient, EnclaveAccount};
-
+#[allow(dead_code)]
 /// Compress an uncompressed secp256k1 public key (65 bytes: 04 || x || y)
 /// to compressed form (33 bytes: 02/03 || x).
 pub fn compress_pubkey(uncompressed: &[u8]) -> Result<Vec<u8>> {
@@ -38,6 +37,7 @@ pub fn compress_pubkey(uncompressed: &[u8]) -> Result<Vec<u8>> {
     Ok(compressed)
 }
 
+#[allow(dead_code)]
 /// Derive XRPL classic address (r...) from uncompressed public key hex.
 ///
 /// XRPL address derivation:
@@ -81,6 +81,7 @@ pub fn pubkey_to_xrpl_address(uncompressed_hex: &str) -> Result<String> {
     Ok(encoded)
 }
 
+#[allow(dead_code)]
 /// DER-encode an ECDSA signature (r, s) for XRPL's TxnSignature field.
 ///
 /// DER format:
@@ -122,6 +123,7 @@ pub fn der_encode_signature(r: &[u8], s: &[u8]) -> Vec<u8> {
     der
 }
 
+#[allow(dead_code)]
 /// SHA-512Half: first 32 bytes of SHA-512.
 /// This is XRPL's signing hash function.
 pub fn sha512_half(data: &[u8]) -> [u8; 32] {
@@ -129,115 +131,6 @@ pub fn sha512_half(data: &[u8]) -> [u8; 32] {
     let mut result = [0u8; 32];
     result.copy_from_slice(&full[..32]);
     result
-}
-
-/// Signs XRPL transactions using the SGX enclave.
-///
-/// Holds enclave account metadata (address, pubkey, session_key).
-/// Replaces xrpl.wallet.Wallet for transaction signing.
-pub struct XrplSigner {
-    pub enclave: EnclaveClient,
-    /// Ethereum-format enclave address ("0x...")
-    pub eth_address: String,
-    /// Uncompressed 65-byte public key hex ("0x...")
-    pub pubkey_uncompressed: String,
-    /// Session key for signing requests ("0x...")
-    pub session_key: String,
-    /// Compressed public key, uppercase hex (for SigningPubKey)
-    pub compressed_pubkey_hex: String,
-    /// XRPL classic address ("r...")
-    pub xrpl_address: String,
-}
-
-impl XrplSigner {
-    /// Create a signer from an enclave client and generated account.
-    pub fn new(enclave: EnclaveClient, account: &EnclaveAccount) -> Result<Self> {
-        let hex_clean = account
-            .public_key
-            .strip_prefix("0x")
-            .unwrap_or(&account.public_key);
-        let raw = hex::decode(hex_clean).context("invalid pubkey hex")?;
-        let compressed = compress_pubkey(&raw)?;
-        let compressed_hex = hex::encode_upper(&compressed);
-        let xrpl_address = pubkey_to_xrpl_address(&account.public_key)?;
-
-        Ok(Self {
-            enclave,
-            eth_address: account.address.clone(),
-            pubkey_uncompressed: account.public_key.clone(),
-            session_key: account.session_key.clone(),
-            compressed_pubkey_hex: compressed_hex,
-            xrpl_address,
-        })
-    }
-
-    /// Sign an XRPL transaction (represented as JSON).
-    ///
-    /// This is a simplified stub — full implementation requires XRPL binary
-    /// codec serialization (`encode_for_signing`). For now it:
-    ///   1. Sets SigningPubKey
-    ///   2. Serializes the JSON canonically
-    ///   3. Computes SHA-512Half
-    ///   4. Sends hash to enclave
-    ///   5. DER-encodes the signature
-    ///   6. Injects TxnSignature
-    ///
-    /// TODO: integrate proper XRPL binary codec for production use.
-    pub async fn sign_xrpl_tx(
-        &self,
-        tx_json: &serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        let mut tx = tx_json.clone();
-
-        // Set SigningPubKey (compressed, uppercase hex)
-        tx["SigningPubKey"] = serde_json::Value::String(self.compressed_pubkey_hex.clone());
-
-        // For a full implementation, we would use XRPL binary codec to serialize.
-        // For now, serialize the JSON canonically as a placeholder.
-        // Production code should use encode_for_signing() equivalent.
-        let serialized = serde_json::to_vec(&tx)?;
-
-        // SHA-512Half -> 32-byte signing hash
-        let signing_hash = sha512_half(&serialized);
-
-        // Send hash to enclave for ECDSA signing
-        let hash_hex = format!("0x{}", hex::encode(signing_hash));
-        let sig = self
-            .enclave
-            .sign_hash(&self.eth_address, &self.session_key, &hash_hex)
-            .await?;
-
-        // DER-encode (r, s)
-        let r_bytes = hex::decode(&sig.r).context("invalid r hex")?;
-        let s_bytes = hex::decode(&sig.s).context("invalid s hex")?;
-        let der_sig = der_encode_signature(&r_bytes, &s_bytes);
-
-        // Inject signature
-        tx["TxnSignature"] = serde_json::Value::String(hex::encode_upper(&der_sig));
-
-        Ok(tx)
-    }
-
-    /// Get the XRPL classic address.
-    pub fn address(&self) -> &str {
-        &self.xrpl_address
-    }
-
-    /// Get the compressed public key hex for XRPL.
-    pub fn signing_pubkey(&self) -> &str {
-        &self.compressed_pubkey_hex
-    }
-
-    /// Serialize account data for storage (no private keys — only enclave references).
-    pub fn to_account_data(&self) -> serde_json::Value {
-        serde_json::json!({
-            "enclave_address": self.eth_address,
-            "public_key": self.pubkey_uncompressed,
-            "session_key": self.session_key,
-            "compressed_pubkey": self.compressed_pubkey_hex,
-            "xrpl_address": self.xrpl_address,
-        })
-    }
 }
 
 #[cfg(test)]

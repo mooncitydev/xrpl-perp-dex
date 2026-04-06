@@ -53,6 +53,7 @@ impl PerpClient {
     }
 
     /// Credit user XRP collateral (valued at mark_price × 90% haircut).
+    #[allow(dead_code)]
     pub async fn deposit_xrp(
         &self,
         user_id: &str,
@@ -71,6 +72,7 @@ impl PerpClient {
     }
 
     /// Atomic margin check + XRPL withdrawal tx signing.
+    #[allow(dead_code)]
     pub async fn withdraw(
         &self,
         user_id: &str,
@@ -123,6 +125,7 @@ impl PerpClient {
     }
 
     /// Close position, realize PnL.
+    #[allow(dead_code)]
     pub async fn close_position(
         &self,
         user_id: &str,

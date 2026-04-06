@@ -161,6 +161,7 @@ impl OrderBook {
     }
 
     /// Spread.
+    #[allow(dead_code)]
     pub fn spread(&self) -> Option<FP8> {
         match (self.best_bid(), self.best_ask()) {
             (Some(bid), Some(ask)) if ask.0 > bid.0 => Some(ask - bid),

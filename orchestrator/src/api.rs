@@ -48,6 +48,7 @@ pub struct AppState {
 #[derive(Deserialize)]
 pub struct SubmitOrderRequest {
     pub user_id: String,
+    #[allow(dead_code)]
     pub market: Option<String>,
     pub side: String,
     #[serde(rename = "type", default = "default_limit")]
@@ -174,7 +175,7 @@ async fn attestation_quote(
     };
 
     // Proxy to enclave attestation-quote endpoint
-    let enclave_url = format!(
+    let _enclave_url = format!(
         "{}/pool/attestation-quote",
         state.perp.base_url().replace("/v1", "").replace("/perp", "")
     );

@@ -5,14 +5,16 @@
 
 use anyhow::{Context, Result};
 use ethers::prelude::*;
-use ethers::types::{Address, H256, U64, U256};
+use ethers::types::{Address, U64};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 /// CommitmentRegistryV4 on Sepolia
 pub const REGISTRY_ADDRESS: &str = "0x77291022F57D2E94E70D619623f917C6D7edA626";
+#[allow(dead_code)]
 pub const SEPOLIA_RPC: &str = "https://rpc.sepolia.org";
+#[allow(dead_code)]
 pub const SEPOLIA_CHAIN_ID: u64 = 11155111;
 
 // ABI for commit() function
@@ -27,6 +29,7 @@ abigen!(
 
 /// State commitment data
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct StateCommitment {
     pub root: String,
     pub snapshot_hash: String,
@@ -39,6 +42,7 @@ pub struct StateCommitment {
 }
 
 /// Compute state hash from enclave balance data.
+#[allow(dead_code)]
 pub fn compute_state_hashes(balance_json: &str) -> Result<(String, String)> {
     use sha2::{Digest, Sha256};
     let snapshot_hash = Sha256::digest(balance_json.as_bytes());
@@ -47,6 +51,7 @@ pub fn compute_state_hashes(balance_json: &str) -> Result<(String, String)> {
 }
 
 /// Sign state commitment via enclave (keccak256(root || snapshot_hash)).
+#[allow(dead_code)]
 pub async fn sign_commitment(
     enclave_url: &str,
     account_address: &str,
@@ -91,6 +96,7 @@ pub async fn sign_commitment(
 }
 
 /// Submit commitment to Sepolia CommitmentRegistryV4.
+#[allow(dead_code)]
 pub async fn submit_to_sepolia(
     private_key_hex: &str,
     market_id: [u8; 32],
@@ -150,6 +156,7 @@ pub async fn submit_to_sepolia(
 }
 
 /// Query existing commitment from Sepolia.
+#[allow(dead_code)]
 pub async fn query_commitment(market_id: [u8; 32]) -> Result<Option<StateCommitment>> {
     let provider = Provider::<Http>::try_from(SEPOLIA_RPC)
         .context("failed to connect to Sepolia RPC")?;

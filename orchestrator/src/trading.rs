@@ -5,11 +5,11 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{error, info, warn};
 
-use crate::orderbook::{Order, OrderBook, OrderStatus, OrderType, TimeInForce, Trade};
+use crate::orderbook::{Order, OrderBook, OrderType, TimeInForce, Trade};
 use crate::p2p::{FillMessage, OrderBatch, OrderMessage};
 use crate::perp_client::PerpClient;
 use crate::types::{FP8, Side};
@@ -34,6 +34,7 @@ pub struct OrderResult {
 
 /// A fill that was rejected by the enclave (margin insufficient).
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct FailedFill {
     pub trade: Trade,
     pub maker_error: Option<String>,

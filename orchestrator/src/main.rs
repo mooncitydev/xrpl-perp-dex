@@ -8,7 +8,6 @@ mod api;
 mod auth;
 mod commitment;
 mod election;
-mod enclave_client;
 mod orderbook;
 mod p2p;
 mod perp_client;
