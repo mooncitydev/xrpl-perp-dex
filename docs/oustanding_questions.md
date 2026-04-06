@@ -38,6 +38,7 @@ How is ordering determined in this system? Is it just the first enclave to recei
 1. positions/get: give me the positions i have in the market, and the details of those positions (size, entry price, etc)
 2. funding/rates/get: give me the current funding rates for the markets
 3. funding/payments/get: give me the funding payments i have made/received
+4. markets/get: give me the details of the markets (current price, market name, etc)
 
 ## Correctness and Verifiability
 
