@@ -44,3 +44,240 @@ How is ordering determined in this system? Is it just the first enclave to recei
 1. openapi spec should be used to generate the models used, at present this is NOT how it is done, the models and the open api spec are completely seperate. Will cause drift and incompatibilities. We should use the spec in build.rs to generate the models used in the orchestrator, this will ensure that the models are always up to date with the spec and that there are no incompatibilities between the models and the spec.
 2. We should have a test suite that tests the correctness of the system, by sending orders to the orchestrator and checking the state of the book after processing those orders. This will ensure that the system is working correctly and that the book is being updated correctly after processing orders.
 3. https://github.com/77ph/xrpl-perp-dex/blob/master/DEPLOYMENT.md#what-is-exposed-externally-via-nginx This is massively out of date referencing endpoints which dont exist anymore, and not referencing endpoints which do exist. This should be updated to reflect the current state of the system, and should be kept up to date as the system evolves. This will ensure that users of the system have accurate information about what endpoints are available and how to use them.
+
+
+## Dead code.
+
+1. there is a massive amount of dead code in the orchestrator, which is not being used at all. This should be removed to reduce the complexity of the codebase and to make it easier to understand. This will also reduce the attack surface of the system, as there will be less code that could potentially contain vulnerabilities.
+
+To view;
+
+```bash
+cd orchestrator
+make fmt lint
+```
+
+```
+warning: field `market` is never read
+  --> src/api.rs:49:9
+   |
+47 | pub struct SubmitOrderRequest {
+   |            ------------------ field in this struct
+48 |     pub user_id: String,
+49 |     pub market: Option<String>,
+   |         ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `SEPOLIA_RPC` is never used
+  --> src/commitment.rs:15:11
+   |
+15 | pub const SEPOLIA_RPC: &str = "https://rpc.sepolia.org";
+   |           ^^^^^^^^^^^
+
+warning: constant `SEPOLIA_CHAIN_ID` is never used
+  --> src/commitment.rs:16:11
+   |
+16 | pub const SEPOLIA_CHAIN_ID: u64 = 11155111;
+   |           ^^^^^^^^^^^^^^^^
+
+warning: struct `StateCommitment` is never constructed
+  --> src/commitment.rs:30:12
+   |
+30 | pub struct StateCommitment {
+   |            ^^^^^^^^^^^^^^^
+
+warning: function `compute_state_hashes` is never used
+  --> src/commitment.rs:42:8
+   |
+42 | pub fn compute_state_hashes(balance_json: &str) -> Result<(String, String)> {
+   |        ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `sign_commitment` is never used
+  --> src/commitment.rs:50:14
+   |
+50 | pub async fn sign_commitment(
+   |              ^^^^^^^^^^^^^^^
+
+warning: function `submit_to_sepolia` is never used
+  --> src/commitment.rs:94:14
+   |
+94 | pub async fn submit_to_sepolia(
+   |              ^^^^^^^^^^^^^^^^^
+
+warning: function `query_commitment` is never used
+   --> src/commitment.rs:153:14
+    |
+153 | pub async fn query_commitment(market_id: [u8; 32]) -> Result<Option<StateCommitment>> {
+    |              ^^^^^^^^^^^^^^^^
+
+warning: struct `EnclaveAccount` is never constructed
+  --> src/enclave_client.rs:15:12
+   |
+15 | pub struct EnclaveAccount {
+   |            ^^^^^^^^^^^^^^
+
+warning: struct `EnclaveSignature` is never constructed
+  --> src/enclave_client.rs:26:12
+   |
+26 | pub struct EnclaveSignature {
+   |            ^^^^^^^^^^^^^^^^
+
+warning: struct `EnclaveClient` is never constructed
+  --> src/enclave_client.rs:36:12
+   |
+36 | pub struct EnclaveClient {
+   |            ^^^^^^^^^^^^^
+
+warning: associated items `new`, `generate_account`, `sign_hash`, `pool_status`, and `is_available` are never used
+   --> src/enclave_client.rs:43:12
+    |
+ 41 | impl EnclaveClient {
+    | ------------------ associated items in this implementation
+ 42 |     /// Create a new client. TLS verification is disabled (self-signed enclave cert).
+ 43 |     pub fn new(base_url: &str) -> Result<Self> {
+    |            ^^^
+...
+ 56 |     pub async fn generate_account(&self) -> Result<EnclaveAccount> {
+    |                  ^^^^^^^^^^^^^^^^
+...
+ 92 |     pub async fn sign_hash(
+    |                  ^^^^^^^^^
+...
+136 |     pub async fn pool_status(&self) -> Result<serde_json::Value> {
+    |                  ^^^^^^^^^^^
+...
+150 |     pub async fn is_available(&self) -> bool {
+    |                  ^^^^^^^^^^^^
+
+warning: method `spread` is never used
+   --> src/orderbook.rs:164:12
+    |
+132 | impl OrderBook {
+    | -------------- method in this implementation
+...
+164 |     pub fn spread(&self) -> Option<FP8> {
+    |            ^^^^^^
+
+warning: methods `deposit_xrp`, `withdraw`, and `close_position` are never used
+   --> src/perp_client.rs:56:18
+    |
+ 15 | impl PerpClient {
+    | --------------- methods in this implementation
+...
+ 56 |     pub async fn deposit_xrp(
+    |                  ^^^^^^^^^^^
+...
+ 74 |     pub async fn withdraw(
+    |                  ^^^^^^^^
+...
+126 |     pub async fn close_position(
+    |                  ^^^^^^^^^^^^^^
+
+warning: fields `trade`, `maker_error`, and `taker_error` are never read
+  --> src/trading.rs:38:9
+   |
+37 | pub struct FailedFill {
+   |            ---------- fields in this struct
+38 |     pub trade: Trade,
+   |         ^^^^^
+39 |     pub maker_error: Option<String>,
+   |         ^^^^^^^^^^^
+40 |     pub taker_error: Option<String>,
+   |         ^^^^^^^^^^^
+   |
+   = note: `FailedFill` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: associated items `ONE`, `SCALE`, `to_f64`, and `abs` are never used
+  --> src/types.rs:23:15
+   |
+21 | impl FP8 {
+   | -------- associated items in this implementation
+22 |     pub const ZERO: FP8 = FP8(0);
+23 |     pub const ONE: FP8 = FP8(FP8_SCALE);
+   |               ^^^
+24 |     pub const SCALE: i64 = FP8_SCALE;
+   |               ^^^^^
+...
+32 |     pub fn to_f64(self) -> f64 {
+   |            ^^^^^^
+...
+42 |     pub fn abs(self) -> Self {
+   |            ^^^
+
+warning: enum `PositionStatus` is never used
+   --> src/types.rs:169:10
+    |
+169 | pub enum PositionStatus {
+    |          ^^^^^^^^^^^^^^
+
+warning: struct `Position` is never constructed
+   --> src/types.rs:188:12
+    |
+188 | pub struct Position {
+    |            ^^^^^^^^
+
+warning: struct `Balance` is never constructed
+   --> src/types.rs:200:12
+    |
+200 | pub struct Balance {
+    |            ^^^^^^^
+
+warning: struct `UserBalance` is never constructed
+   --> src/types.rs:207:12
+    |
+207 | pub struct UserBalance {
+    |            ^^^^^^^^^^^
+
+warning: function `compress_pubkey` is never used
+  --> src/xrpl_signer.rs:21:8
+   |
+21 | pub fn compress_pubkey(uncompressed: &[u8]) -> Result<Vec<u8>> {
+   |        ^^^^^^^^^^^^^^^
+
+warning: function `pubkey_to_xrpl_address` is never used
+  --> src/xrpl_signer.rs:48:8
+   |
+48 | pub fn pubkey_to_xrpl_address(uncompressed_hex: &str) -> Result<String> {
+   |        ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `der_encode_signature` is never used
+  --> src/xrpl_signer.rs:93:8
+   |
+93 | pub fn der_encode_signature(r: &[u8], s: &[u8]) -> Vec<u8> {
+   |        ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `sha512_half` is never used
+   --> src/xrpl_signer.rs:127:8
+    |
+127 | pub fn sha512_half(data: &[u8]) -> [u8; 32] {
+    |        ^^^^^^^^^^^
+
+warning: struct `XrplSigner` is never constructed
+   --> src/xrpl_signer.rs:138:12
+    |
+138 | pub struct XrplSigner {
+    |            ^^^^^^^^^^
+
+warning: associated items `new`, `sign_xrpl_tx`, `address`, `signing_pubkey`, and `to_account_data` are never used
+   --> src/xrpl_signer.rs:154:12
+    |
+152 | impl XrplSigner {
+    | --------------- associated items in this implementation
+153 |     /// Create a signer from an enclave client and generated account.
+154 |     pub fn new(enclave: EnclaveClient, account: &EnclaveAccount) -> Result<Self> {
+    |            ^^^
+...
+186 |     pub async fn sign_xrpl_tx(
+    |                  ^^^^^^^^^^^^
+...
+222 |     pub fn address(&self) -> &str {
+    |            ^^^^^^^
+...
+227 |     pub fn signing_pubkey(&self) -> &str {
+    |            ^^^^^^^^^^^^^^
+...
+232 |     pub fn to_account_data(&self) -> serde_json::Value {
+    |            ^^^^^^^^^^^^^^^
+```
+
