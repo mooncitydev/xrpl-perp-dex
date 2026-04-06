@@ -145,9 +145,10 @@ pub async fn auth_middleware(request: Request, next: Next) -> Response {
     let uri = request.uri().path().to_string();
 
     // Public endpoints — no auth required
-    // Public endpoints — no auth required
     if uri == "/v1/openapi.json"
+        || uri == "/v1/pool/status"
         || uri.starts_with("/v1/attestation/")
+        || uri.starts_with("/v1/perp/liquidations/")
         || (method == "GET" && uri.starts_with("/v1/markets/"))
     {
         return next.run(request).await;
