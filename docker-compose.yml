@@ -1,0 +1,61 @@
+# Docker Compose for Perp DEX development/testing.
+#
+# NOTE: SGX enclave requires hardware support and cannot run in standard Docker.
+# This compose file runs:
+#   1. Mock enclave (for testing without SGX hardware)
+#   2. Orchestrator (real Rust binary)
+#   3. nginx (reverse proxy with TLS termination)
+#
+# For production with real SGX: use bare metal or Azure DCsv3.
+# See DEPLOYMENT.md for production setup.
+#
+# Usage:
+#   docker compose up -d
+#   curl http://localhost:3000/v1/openapi.json
+#   python3 tests/test_e2e.py
+
+services:
+  # Mock enclave — returns success for all perp endpoints.
+  # Replace with real enclave on SGX hardware.
+  mock-enclave:
+    build:
+      context: ./orchestrator/tests
+      dockerfile: Dockerfile.mock-enclave
+    ports:
+      - "9088:9088"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9088/v1/pool/status"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Orchestrator — trading engine, orderbook, auth, P2P
+  orchestrator:
+    build:
+      context: ./orchestrator
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - RUST_LOG=info
+    command: >
+      ./perp-dex-orchestrator
+      --enclave-url http://mock-enclave:9088/v1
+      --api-listen 0.0.0.0:3000
+      --priority 0
+      --xrpl-url https://s.altnet.rippletest.net:51234
+      --escrow-address rTestEscrow
+    depends_on:
+      mock-enclave:
+        condition: service_healthy
+
+  # nginx — reverse proxy (optional, for testing nginx config)
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "8443:443"
+      - "8080:80"
+    volumes:
+      - ./nginx/api-perp.ph18.io.dev:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - orchestrator
