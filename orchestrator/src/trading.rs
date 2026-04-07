@@ -70,6 +70,25 @@ impl TradingEngine {
         reduce_only: bool,
         client_order_id: Option<String>,
     ) -> Result<OrderResult> {
+        // Step 0: Pre-check margin in enclave before matching
+        // This prevents consuming maker liquidity for orders that enclave will reject
+        let balance = self.perp.get_balance(&user_id).await;
+        if let Ok(bal) = &balance {
+            if let Some(avail_str) = bal["data"]["available_margin"].as_str() {
+                if let Ok(avail) = avail_str.parse::<FP8>() {
+                    let est_price = if price.raw() > 0 { price } else { FP8::from_f64(1.0) };
+                    let notional = size * est_price;
+                    let est_margin = FP8(notional.raw() / leverage as i64);
+                    if avail.raw() < est_margin.raw() {
+                        anyhow::bail!(
+                            "insufficient margin: available={}, required~={}",
+                            avail, est_margin
+                        );
+                    }
+                }
+            }
+        }
+
         // Step 1: Match on the order book
         let (order, trades) = {
             let mut book = self.book.lock().await;

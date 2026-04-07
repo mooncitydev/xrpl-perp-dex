@@ -40,5 +40,11 @@ libp2p = { version = "0.54", features = ["gossipsub", "tcp", "noise", "yamux", "
 # Ethereum (Sepolia CommitmentRegistry submission)
 ethers = { version = "2", features = ["abigen"] }
 
+# XRPL binary codec + tx building
+xrpl-mithril-codec = "0.3"
+xrpl-mithril-models = "0.4"
+xrpl-mithril-tx = "0.4"
+xrpl-mithril-types = "0.1"
+
 # Error handling
 anyhow = "1"

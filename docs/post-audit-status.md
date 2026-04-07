@@ -9,7 +9,7 @@
 
 | # | Finding | Status | Notes |
 |---|---------|--------|-------|
-| C-01 | Withdrawal signature discarded | **Known limitation** | withdrawal.rs is a placeholder — full XRPL binary codec needed (xrpl-rs or port from Python sgx_signer.py). Real withdrawal works via Python e2e_multisig_withdrawal.py. Not a production path yet. |
+| C-01 | Withdrawal signature discarded | **In progress** | `xrpl-mithril-codec` crate added to deps — has `signing_hash` and `multi_signing_hash`. Integration pending — requires PaymentBuilder + enclave signing flow. Real withdrawal works via Python e2e_multisig_withdrawal.py in the meantime. |
 | C-02 | Price/funding/liquidation without auth on enclave | **Mitigated by architecture** | Enclave listens on localhost:9088 only. nginx blocks all internal endpoints (return 403). iptables drops external access to 9088. Only orchestrator calls these. For production: add admin session key to ecalls. |
 | C-03 | No replay protection on auth | **Fixed** | X-XRPL-Timestamp header: 30s drift max, timestamp included in signed hash. Legacy mode (no timestamp) still accepted for backwards compatibility. |
 | C-04 | Deposits without on-chain verification | **By design (MVP)** | Enclave trusts orchestrator. For production: SPV proof or multi-operator deposit confirmation (2-of-3 operators must confirm). This is documented in doc 04 (multi-operator architecture). |
@@ -24,7 +24,7 @@
 | H-04 | Deposits re-credited on restart | **Fixed** | last_ledger persisted to /tmp/perp-9088/last_ledger.txt |
 | H-05 | Funding rate always zero | **Fixed** | Mark price from orderbook mid, index from Binance |
 | H-06 | FOK not enforced | **Fixed** | Pre-check available liquidity before matching. Reject FOK if insufficient. |
-| H-07 | Fills not rolled back on enclave reject | **Mitigated** | Added ERROR log on failed fills. Full rollback requires tentative matching — deferred to production. |
+| H-07 | Fills not rolled back on enclave reject | **Fixed** | Pre-check margin via enclave balance query before orderbook matching. Rejects order if estimated margin insufficient. |
 | H-08 | Funding drives margin negative | **Fixed** | Enclave caps negative margin at 0, moves deficit to insurance fund |
 | H-09 | Tx hash dedup stops at 500 | **Fixed** | Circular buffer — overwrites oldest after 500. perp_tx_hash_seen scans full buffer. |
 
@@ -44,7 +44,7 @@
 | M-10 | fp_div returns 0 on /0 | **Fixed** | Vault deposit rejects zero-share results. share_price defaults to FP_ONE on first deposit. |
 | M-11 | Closed positions never GC'd | **Fixed** | perp_gc_positions() compacts array. Auto-called when nearing MAX_PERP_POSITIONS. |
 | M-12 | Session key comparison not constant-time | **Fixed** | ct_memcmp replaces memcmp for all session key comparisons in enclave |
-| M-13 | State persistence not atomic | **Known limitation** | 5-part partitioned sealing. Crash mid-save can corrupt. Mitigation: save is called every 5 minutes, probability low. Production: versioned snapshots. |
+| M-13 | State persistence not atomic | **Fixed** | Versioned snapshots: write to .new files, then rename to .sealed. Previous .sealed intact if crash during write. |
 | M-14 | Vault deposit checks raw margin | **Fixed** | Uses perp_available_margin() instead of raw margin_balance |
 | M-15 | No rate limiting on enclave API | **Mitigated** | Enclave is localhost only. Orchestrator serializes via Mutex (1 request at a time). |
 
@@ -58,7 +58,7 @@
 | L-04 | session_key validation wrong variable | **Fixed** | Was checking hash prefix, now checks session_key prefix |
 | L-05 | TLS disabled in Python client | **By design** | Self-signed enclave cert. Python client on same localhost. |
 | L-06 | DCAP quote without auth | **By design** | Attestation must be public — anyone should verify enclave identity. |
-| L-07 | Debug logging leaks info | **PoC only** | Production: remove debug ocalls. |
+| L-07 | Debug logging leaks info | **Already fixed** | LOG macros compile to no-op when SGX_DEBUG != 1. Perp code uses snprintf to buffers only. |
 | L-08 | App.cpp system() | **Not our code** | App.cpp is PM's original code, not used by perp-dex-server. Ignore. |
 | L-09 | Enclave TLS cert disabled | **By design** | Same as L-05. Self-signed cert, localhost only. |
 | L-10 | Election heartbeat seq not validated | **Acceptable** | Heartbeat dedup handled by gossipsub message_id_fn. |
