@@ -94,7 +94,13 @@ def sign_request(sk, pubkey_hex, address, body_str=None, uri=None):
     else:
         data = b""
 
-    hash_bytes = hashlib.sha256(data).digest()
+    # Include timestamp in hash for replay protection
+    ts = str(int(time.time()))
+    h = hashlib.sha256()
+    h.update(data)
+    h.update(ts.encode())
+    hash_bytes = h.digest()
+
     sig = sk.sign_digest(hash_bytes, sigencode=sigencode_der)
 
     # Normalize to low-S
@@ -107,6 +113,7 @@ def sign_request(sk, pubkey_hex, address, body_str=None, uri=None):
         "X-XRPL-Address": address,
         "X-XRPL-PublicKey": pubkey_hex,
         "X-XRPL-Signature": sig.hex(),
+        "X-XRPL-Timestamp": ts,
         "Content-Type": "application/json",
     }
 
