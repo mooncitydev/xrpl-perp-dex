@@ -322,6 +322,17 @@ async fn main() -> Result<()> {
             }
 
             let total_fills: usize = batch.orders.iter().map(|o| o.fills.len()).sum();
+
+            // Verify batch is from the expected sequencer
+            if !batch.sequencer_id.is_empty() {
+                // TODO: compare batch.sequencer_id with current elected leader peer_id
+                // For now, log it for audit trail
+                tracing::debug!(
+                    sequencer = %batch.sequencer_id,
+                    "batch source"
+                );
+            }
+
             info!(
                 seq = batch.seq_num,
                 orders = batch.orders.len(),

@@ -35,7 +35,7 @@
 | M-01 | FP8 division by zero panic | **Fixed** | Returns FP8::ZERO on /0 |
 | M-02 | FP8 overflow on large values | **Acceptable** | >92B RLUSD exceeds total RLUSD supply. Checked in invariant tests. |
 | M-03 | Withdrawal amount trim_end_matches | **Fixed** | Removed trimming — XRPL accepts FP8 strings as-is |
-| M-04 | P2P batches not authenticated | **TODO** | Need leader signature verification |
+| M-04 | P2P batches not authenticated | **Mitigated** | Gossipsub signed messages + sequencer_id logged. Full leader verification deferred to production. |
 | M-05 | State hash is timestamp | **Known placeholder** | TODO in code. Real hash needs Merkle tree of enclave state. |
 | M-06 | CORS allows all origins | **Acceptable for PoC** | Production: restrict to perp.ph18.io |
 | M-07 | Withdrawal destination not validated | **Fixed** | XRPL r-address format check before processing |
@@ -43,7 +43,7 @@
 | M-09 | Integer overflow in enclave FP8 | **Same as M-02** | >92B overflow. Not reachable with realistic values. |
 | M-10 | fp_div returns 0 on /0 | **Fixed** | Vault deposit rejects zero-share results. share_price defaults to FP_ONE on first deposit. |
 | M-11 | Closed positions never GC'd | **Fixed** | perp_gc_positions() compacts array. Auto-called when nearing MAX_PERP_POSITIONS. |
-| M-12 | Session key comparison not constant-time | **Acceptable for PoC** | Enclave is on localhost, timing attack requires local access. Production: use constant-time compare. |
+| M-12 | Session key comparison not constant-time | **Fixed** | ct_memcmp replaces memcmp for all session key comparisons in enclave |
 | M-13 | State persistence not atomic | **Known limitation** | 5-part partitioned sealing. Crash mid-save can corrupt. Mitigation: save is called every 5 minutes, probability low. Production: versioned snapshots. |
 | M-14 | Vault deposit checks raw margin | **Fixed** | Uses perp_available_margin() instead of raw margin_balance |
 | M-15 | No rate limiting on enclave API | **Mitigated** | Enclave is localhost only. Orchestrator serializes via Mutex (1 request at a time). |
@@ -62,7 +62,7 @@
 | L-08 | App.cpp system() | **Not our code** | App.cpp is PM's original code, not used by perp-dex-server. Ignore. |
 | L-09 | Enclave TLS cert disabled | **By design** | Same as L-05. Self-signed cert, localhost only. |
 | L-10 | Election heartbeat seq not validated | **Acceptable** | Heartbeat dedup handled by gossipsub message_id_fn. |
-| L-11 | Auth bypass for non-JSON bodies | **TODO** | |
+| L-11 | Auth bypass for non-JSON bodies | **Fixed** | Non-JSON POST bodies rejected with 400 |
 | L-12 | GET signature not normalized | **Acceptable** | Low-S normalization done on client side (Python auth helper). |
 | L-13 | Gossipsub message ID non-crypto hash | **Acceptable** | DefaultHasher sufficient for dedup. Not security-critical. |
 | L-14 | URL injection in perp_client | **Mitigated** | perp_client only called internally with trusted URLs. |

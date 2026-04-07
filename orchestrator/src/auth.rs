@@ -203,23 +203,33 @@ pub async fn auth_middleware(request: Request, next: Next) -> Response {
 
     match verify_request(&headers, &body_bytes, &uri_string) {
         Ok(user) => {
-            // For POST with body: verify user_id in body matches authenticated address
+            // For POST/DELETE with body: verify user_id matches authenticated address
             if !body_bytes.is_empty() {
-                if let Ok(body_json) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
-                    if let Some(body_user_id) = body_json.get("user_id").and_then(|v| v.as_str()) {
-                        if body_user_id != user.xrpl_address {
-                            return (
-                                StatusCode::FORBIDDEN,
-                                Json(serde_json::json!({
-                                    "status": "error",
-                                    "message": format!(
-                                        "user_id '{}' does not match authenticated address '{}'",
-                                        body_user_id, user.xrpl_address
-                                    )
-                                })),
-                            )
-                                .into_response();
+                match serde_json::from_slice::<serde_json::Value>(&body_bytes) {
+                    Ok(body_json) => {
+                        if let Some(body_user_id) = body_json.get("user_id").and_then(|v| v.as_str()) {
+                            if body_user_id != user.xrpl_address {
+                                return (
+                                    StatusCode::FORBIDDEN,
+                                    Json(serde_json::json!({
+                                        "status": "error",
+                                        "message": format!(
+                                            "user_id '{}' does not match authenticated address '{}'",
+                                            body_user_id, user.xrpl_address
+                                        )
+                                    })),
+                                )
+                                    .into_response();
+                            }
                         }
+                    }
+                    Err(_) => {
+                        // Reject non-JSON bodies on authenticated endpoints
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(serde_json::json!({"status": "error", "message": "request body must be valid JSON"})),
+                        )
+                            .into_response();
                     }
                 }
             }
