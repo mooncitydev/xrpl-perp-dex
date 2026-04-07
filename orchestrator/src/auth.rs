@@ -58,14 +58,19 @@ pub fn verify_request(
         .ok_or("missing X-XRPL-Timestamp header (required for replay protection)")?;
 
     {
-        let ts: u64 = timestamp_str.parse().map_err(|_| "invalid X-XRPL-Timestamp")?;
+        let ts: u64 = timestamp_str
+            .parse()
+            .map_err(|_| "invalid X-XRPL-Timestamp")?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let drift = if now > ts { now - ts } else { ts - now };
+        let drift = now.abs_diff(ts);
         if drift > 30 {
-            return Err(format!("request expired: timestamp drift {}s (max 30s)", drift));
+            return Err(format!(
+                "request expired: timestamp drift {}s (max 30s)",
+                drift
+            ));
         }
     }
 
@@ -80,28 +85,28 @@ pub fn verify_request(
     }
 
     // Decode public key
-    let pubkey_bytes = hex::decode(pubkey_hex)
-        .map_err(|_| "invalid public key hex")?;
-    let verifying_key = VerifyingKey::from_sec1_bytes(&pubkey_bytes)
-        .map_err(|_| "invalid secp256k1 public key")?;
+    let pubkey_bytes = hex::decode(pubkey_hex).map_err(|_| "invalid public key hex")?;
+    let verifying_key =
+        VerifyingKey::from_sec1_bytes(&pubkey_bytes).map_err(|_| "invalid secp256k1 public key")?;
 
     // Verify pubkey → XRPL address derivation
     // XRPL: SHA-256(compressed_pubkey) → RIPEMD-160 → Base58Check with prefix 0x00
     let sha256_hash = Sha256::digest(&pubkey_bytes);
-    let ripemd_hash = Ripemd160::digest(&sha256_hash);
+    let ripemd_hash = Ripemd160::digest(sha256_hash);
 
     // Base58Check: [0x00] + ripemd_hash + checksum
     let mut payload = vec![0x00u8];
     payload.extend_from_slice(&ripemd_hash);
-    let checksum = Sha256::digest(&Sha256::digest(&payload));
+    let checksum = Sha256::digest(Sha256::digest(&payload));
     payload.extend_from_slice(&checksum[..4]);
 
     // XRPL uses its own Base58 alphabet
     const XRPL_ALPHABET: &str = "rpshnaf39wBUDNEGHJKLM4PQRST7VWXYZ2bcdeCg65jkm8oFqi1tuvAxyz";
-    let alpha_bytes: &[u8; 58] = XRPL_ALPHABET.as_bytes().try_into()
+    let alpha_bytes: &[u8; 58] = XRPL_ALPHABET
+        .as_bytes()
+        .try_into()
         .expect("XRPL alphabet is 58 chars");
-    let alpha = bs58::Alphabet::new(alpha_bytes)
-        .expect("valid alphabet");
+    let alpha = bs58::Alphabet::new(alpha_bytes).expect("valid alphabet");
     let derived_address = bs58::encode(&payload).with_alphabet(&alpha).into_string();
 
     if derived_address != address {
@@ -124,15 +129,13 @@ pub fn verify_request(
     };
 
     // Decode and verify signature
-    let sig_bytes = hex::decode(sig_hex)
-        .map_err(|_| "invalid signature hex")?;
-    let signature = Signature::from_der(&sig_bytes)
-        .map_err(|_| "invalid DER signature")?;
+    let sig_bytes = hex::decode(sig_hex).map_err(|_| "invalid signature hex")?;
+    let signature = Signature::from_der(&sig_bytes).map_err(|_| "invalid DER signature")?;
 
     // Verify ECDSA signature over pre-hashed data (SHA-256 already computed)
     if let Err(e) = verifying_key.verify_prehash(&hash, &signature) {
         tracing::debug!(
-            hash_hex = %hex::encode(&hash),
+            hash_hex = %hex::encode(hash),
             sig_hex = %sig_hex,
             pubkey_hex = %pubkey_hex,
             err = %e,
@@ -200,7 +203,9 @@ pub async fn auth_middleware(request: Request, next: Next) -> Response {
             if !body_bytes.is_empty() {
                 match serde_json::from_slice::<serde_json::Value>(&body_bytes) {
                     Ok(body_json) => {
-                        if let Some(body_user_id) = body_json.get("user_id").and_then(|v| v.as_str()) {
+                        if let Some(body_user_id) =
+                            body_json.get("user_id").and_then(|v| v.as_str())
+                        {
                             if body_user_id != user.xrpl_address {
                                 return (
                                     StatusCode::FORBIDDEN,
@@ -301,7 +306,10 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("x-xrpl-address", address.parse().unwrap());
         headers.insert("x-xrpl-publickey", pubkey_hex.parse().unwrap());
-        headers.insert("x-xrpl-signature", hex::encode(sig_der.as_bytes()).parse().unwrap());
+        headers.insert(
+            "x-xrpl-signature",
+            hex::encode(sig_der.as_bytes()).parse().unwrap(),
+        );
         headers.insert("x-xrpl-timestamp", ts.parse().unwrap());
         headers
     }
@@ -343,7 +351,10 @@ mod tests {
     #[test]
     fn missing_pubkey_header_fails() {
         let mut headers = HeaderMap::new();
-        headers.insert("x-xrpl-address", "rTest12345678901234567890".parse().unwrap());
+        headers.insert(
+            "x-xrpl-address",
+            "rTest12345678901234567890".parse().unwrap(),
+        );
         headers.insert("x-xrpl-signature", "deadbeef".parse().unwrap());
         let result = verify_request(&headers, b"body", "/");
         assert_eq!(result.unwrap_err(), "missing X-XRPL-PublicKey header");
@@ -352,7 +363,10 @@ mod tests {
     #[test]
     fn missing_signature_header_fails() {
         let mut headers = HeaderMap::new();
-        headers.insert("x-xrpl-address", "rTest12345678901234567890".parse().unwrap());
+        headers.insert(
+            "x-xrpl-address",
+            "rTest12345678901234567890".parse().unwrap(),
+        );
         headers.insert("x-xrpl-publickey", "aa".repeat(33).parse().unwrap());
         let result = verify_request(&headers, b"body", "/");
         assert_eq!(result.unwrap_err(), "missing X-XRPL-Signature header");
@@ -378,12 +392,18 @@ mod tests {
     #[test]
     fn wrong_pubkey_length_rejected() {
         let mut headers = HeaderMap::new();
-        headers.insert("x-xrpl-address", "rTest12345678901234567890".parse().unwrap());
+        headers.insert(
+            "x-xrpl-address",
+            "rTest12345678901234567890".parse().unwrap(),
+        );
         headers.insert("x-xrpl-publickey", "aabb".parse().unwrap()); // too short
         headers.insert("x-xrpl-signature", "deadbeef".parse().unwrap());
         headers.insert("x-xrpl-timestamp", current_ts().parse().unwrap());
         let result = verify_request(&headers, b"body", "/");
-        assert_eq!(result.unwrap_err(), "invalid public key length (expected 66 hex chars)");
+        assert_eq!(
+            result.unwrap_err(),
+            "invalid public key length (expected 66 hex chars)"
+        );
     }
 
     #[test]
@@ -440,7 +460,10 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("x-xrpl-address", address.parse().unwrap());
         headers.insert("x-xrpl-publickey", pubkey_hex.parse().unwrap());
-        headers.insert("x-xrpl-signature", hex::encode(sig.to_der().as_bytes()).parse().unwrap());
+        headers.insert(
+            "x-xrpl-signature",
+            hex::encode(sig.to_der().as_bytes()).parse().unwrap(),
+        );
         // NO timestamp header
         let result = verify_request(&headers, body, "/");
         assert!(result.unwrap_err().contains("X-XRPL-Timestamp"));

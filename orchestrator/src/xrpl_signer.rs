@@ -29,7 +29,7 @@ pub fn compress_pubkey(uncompressed: &[u8]) -> Result<Vec<u8>> {
     let y = &uncompressed[33..65];
 
     // Even y -> prefix 02, odd y -> prefix 03
-    let prefix = if y[31] % 2 == 0 { 0x02 } else { 0x03 };
+    let prefix = if y[31].is_multiple_of(2) { 0x02 } else { 0x03 };
 
     let mut compressed = Vec::with_capacity(33);
     compressed.push(prefix);
@@ -46,7 +46,9 @@ pub fn compress_pubkey(uncompressed: &[u8]) -> Result<Vec<u8>> {
 ///   3. RIPEMD-160(sha256) -> 20 bytes (account ID)
 ///   4. Base58Check encode with payload type prefix 0x00
 pub fn pubkey_to_xrpl_address(uncompressed_hex: &str) -> Result<String> {
-    let hex_clean = uncompressed_hex.strip_prefix("0x").unwrap_or(uncompressed_hex);
+    let hex_clean = uncompressed_hex
+        .strip_prefix("0x")
+        .unwrap_or(uncompressed_hex);
     let raw = hex::decode(hex_clean).context("invalid hex in pubkey")?;
     let compressed = compress_pubkey(&raw)?;
 
@@ -59,8 +61,7 @@ pub fn pubkey_to_xrpl_address(uncompressed_hex: &str) -> Result<String> {
     // Base58Check with XRPL alphabet and type prefix 0x00
     // XRPL uses a custom Base58 alphabet:
     //   rpshnaf39wBUDNEGHJKLM4PQRST7VWXYZ2bcdeCg65jkm8oFqi1tuvAxyz
-    const XRPL_ALPHABET: &[u8; 58] =
-        b"rpshnaf39wBUDNEGHJKLM4PQRST7VWXYZ2bcdeCg65jkm8oFqi1tuvAxyz";
+    const XRPL_ALPHABET: &[u8; 58] = b"rpshnaf39wBUDNEGHJKLM4PQRST7VWXYZ2bcdeCg65jkm8oFqi1tuvAxyz";
     let alphabet = bs58::Alphabet::new(XRPL_ALPHABET).expect("valid alphabet");
 
     // Payload: [0x00] + 20-byte account_id
@@ -143,8 +144,9 @@ mod tests {
         let uncompressed = hex::decode(
             "04\
              79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798\
-             483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8"
-        ).unwrap();
+             483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8",
+        )
+        .unwrap();
         let compressed = compress_pubkey(&uncompressed).unwrap();
         assert_eq!(compressed.len(), 33);
         assert_eq!(compressed[0], 0x02); // even y
@@ -177,6 +179,10 @@ mod tests {
             79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798\
             483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8";
         let addr = pubkey_to_xrpl_address(uncompressed_hex).unwrap();
-        assert!(addr.starts_with('r'), "XRPL address should start with 'r': {}", addr);
+        assert!(
+            addr.starts_with('r'),
+            "XRPL address should start with 'r': {}",
+            addr
+        );
     }
 }

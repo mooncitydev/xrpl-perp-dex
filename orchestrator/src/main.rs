@@ -152,8 +152,7 @@ async fn run_liquidation_scan(
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -163,10 +162,12 @@ async fn main() -> Result<()> {
     let escrow_address = match cli.escrow_address {
         Some(addr) => addr,
         None => {
-            let config_data = std::fs::read_to_string(&cli.escrow_config)
-                .with_context(|| {
-                    format!("no --escrow-address and cannot read {}", cli.escrow_config.display())
-                })?;
+            let config_data = std::fs::read_to_string(&cli.escrow_config).with_context(|| {
+                format!(
+                    "no --escrow-address and cannot read {}",
+                    cli.escrow_config.display()
+                )
+            })?;
             let config: serde_json::Value =
                 serde_json::from_str(&config_data).context("invalid escrow config JSON")?;
             config["xrpl_address"]
@@ -269,21 +270,23 @@ async fn main() -> Result<()> {
     );
 
     // Start election state machine
-    let (role_tx, mut role_rx) = tokio::sync::watch::channel(
-        if cli.priority == 0 {
-            election::Role::Sequencer
-        } else {
-            election::Role::Validator
-        },
-    );
+    let (role_tx, mut role_rx) = tokio::sync::watch::channel(if cli.priority == 0 {
+        election::Role::Sequencer
+    } else {
+        election::Role::Validator
+    });
     let election_config = election::ElectionConfig {
         our_peer_id: p2p_node.peer_id.to_string(),
         our_priority: cli.priority,
         heartbeat_interval: Duration::from_secs(5),
         heartbeat_timeout: Duration::from_secs(15),
     };
-    let mut election_state =
-        election::ElectionState::new(election_config, election_outbound_tx, election_inbound_rx, role_tx);
+    let mut election_state = election::ElectionState::new(
+        election_config,
+        election_outbound_tx,
+        election_inbound_rx,
+        role_tx,
+    );
     let _election_handle = tokio::spawn(async move {
         election_state.run().await;
     });
@@ -452,10 +455,9 @@ async fn main() -> Result<()> {
                     if let Err(e) = perp.update_price(&mark_fp8, &index_fp8, now_ts).await {
                         error!("price update failed: {}", e);
                     }
-                    app_state.mark_price.store(
-                        crate::types::FP8::from_f64(mark).raw(),
-                        Ordering::Relaxed,
-                    );
+                    app_state
+                        .mark_price
+                        .store(crate::types::FP8::from_f64(mark).raw(), Ordering::Relaxed);
                     let _ = app_state.ws_tx.send(WsEvent::Ticker {
                         mark_price: mark_fp8,
                         index_price: index_fp8,
@@ -504,10 +506,9 @@ async fn main() -> Result<()> {
             match perp.apply_funding(&fp8_rate, now_ts).await {
                 Ok(_) => {
                     info!(rate = %fp8_rate, "applied funding rate");
-                    app_state.funding_rate.store(
-                        crate::types::FP8::from_f64(rate).raw(),
-                        Ordering::Relaxed,
-                    );
+                    app_state
+                        .funding_rate
+                        .store(crate::types::FP8::from_f64(rate).raw(), Ordering::Relaxed);
                     app_state.last_funding_time.store(now_ts, Ordering::Relaxed);
                 }
                 Err(e) => error!("funding application failed: {}", e),

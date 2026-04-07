@@ -44,10 +44,7 @@ impl XrplMonitor {
     /// Scan for new deposits since `last_ledger`.
     ///
     /// Returns a list of deposit events and the new high-water-mark ledger index.
-    pub async fn scan_deposits(
-        &self,
-        last_ledger: u32,
-    ) -> Result<(Vec<DepositEvent>, u32)> {
+    pub async fn scan_deposits(&self, last_ledger: u32) -> Result<(Vec<DepositEvent>, u32)> {
         let params = serde_json::json!({
             "account": self.escrow_address,
             "ledger_index_min": last_ledger as i64 + 1,
@@ -80,9 +77,7 @@ impl XrplMonitor {
         if result.get("error").is_some() {
             warn!(
                 "XRPL account_tx error: {}",
-                result["error_message"]
-                    .as_str()
-                    .unwrap_or("unknown")
+                result["error_message"].as_str().unwrap_or("unknown")
             );
             return Ok((vec![], last_ledger));
         }
@@ -111,13 +106,12 @@ impl XrplMonitor {
             }
 
             // Extract amount — RLUSD is an issued currency (object with "value")
-            let amount = if meta.get("delivered_amount").is_some()
-                && !meta["delivered_amount"].is_null()
-            {
-                &meta["delivered_amount"]
-            } else {
-                &tx["Amount"]
-            };
+            let amount =
+                if meta.get("delivered_amount").is_some() && !meta["delivered_amount"].is_null() {
+                    &meta["delivered_amount"]
+                } else {
+                    &tx["Amount"]
+                };
 
             // We only handle issued currency (object), skip XRP-only payments
             let value = match amount.as_object() {

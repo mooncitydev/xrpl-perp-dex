@@ -12,7 +12,7 @@ use tracing::{error, info, warn};
 use crate::orderbook::{Order, OrderBook, OrderType, TimeInForce, Trade};
 use crate::p2p::{FillMessage, OrderBatch, OrderMessage};
 use crate::perp_client::PerpClient;
-use crate::types::{FP8, Side};
+use crate::types::{Side, FP8};
 
 /// Trading engine: orderbook + enclave integration + P2P batch publishing.
 pub struct TradingEngine {
@@ -58,6 +58,7 @@ impl TradingEngine {
     }
 
     /// Submit an order: match on the book, then settle fills via enclave.
+    #[allow(clippy::too_many_arguments)]
     pub async fn submit_order(
         &self,
         user_id: String,
@@ -76,13 +77,18 @@ impl TradingEngine {
         if let Ok(bal) = &balance {
             if let Some(avail_str) = bal["data"]["available_margin"].as_str() {
                 if let Ok(avail) = avail_str.parse::<FP8>() {
-                    let est_price = if price.raw() > 0 { price } else { FP8::from_f64(1.0) };
+                    let est_price = if price.raw() > 0 {
+                        price
+                    } else {
+                        FP8::from_f64(1.0)
+                    };
                     let notional = size * est_price;
                     let est_margin = FP8(notional.raw() / leverage as i64);
                     if avail.raw() < est_margin.raw() {
                         anyhow::bail!(
                             "insufficient margin: available={}, required~={}",
-                            avail, est_margin
+                            avail,
+                            est_margin
                         );
                     }
                 }
@@ -93,8 +99,15 @@ impl TradingEngine {
         let (order, trades) = {
             let mut book = self.book.lock().await;
             book.submit_order(
-                user_id, side, order_type, price, size, leverage,
-                time_in_force, reduce_only, client_order_id,
+                user_id,
+                side,
+                order_type,
+                price,
+                size,
+                leverage,
+                time_in_force,
+                reduce_only,
+                client_order_id,
             )?
         };
 
@@ -120,13 +133,16 @@ impl TradingEngine {
             };
 
             // Open position for taker
-            let taker_result = self.perp.open_position(
-                &trade.taker_user_id,
-                taker_side,
-                &fill_size,
-                &fill_price,
-                leverage,
-            ).await;
+            let taker_result = self
+                .perp
+                .open_position(
+                    &trade.taker_user_id,
+                    taker_side,
+                    &fill_size,
+                    &fill_price,
+                    leverage,
+                )
+                .await;
 
             let taker_err = match &taker_result {
                 Ok(v) => {
@@ -155,13 +171,16 @@ impl TradingEngine {
             };
 
             // Open position for maker
-            let maker_result = self.perp.open_position(
-                &trade.maker_user_id,
-                maker_side,
-                &fill_size,
-                &fill_price,
-                leverage,
-            ).await;
+            let maker_result = self
+                .perp
+                .open_position(
+                    &trade.maker_user_id,
+                    maker_side,
+                    &fill_size,
+                    &fill_price,
+                    leverage,
+                )
+                .await;
 
             let maker_err = match &maker_result {
                 Ok(v) => {
@@ -226,15 +245,18 @@ impl TradingEngine {
                         size: order.size.to_string(),
                         leverage: order.leverage,
                         status: format!("{:?}", order.status),
-                        fills: trades.iter().map(|t| FillMessage {
-                            trade_id: t.trade_id,
-                            maker_order_id: t.maker_order_id,
-                            taker_order_id: t.taker_order_id,
-                            maker_user_id: t.maker_user_id.clone(),
-                            price: t.price.to_string(),
-                            size: t.size.to_string(),
-                            taker_side: format!("{}", t.taker_side),
-                        }).collect(),
+                        fills: trades
+                            .iter()
+                            .map(|t| FillMessage {
+                                trade_id: t.trade_id,
+                                maker_order_id: t.maker_order_id,
+                                taker_order_id: t.taker_order_id,
+                                maker_user_id: t.maker_user_id.clone(),
+                                price: t.price.to_string(),
+                                size: t.size.to_string(),
+                                taker_side: format!("{}", t.taker_side),
+                            })
+                            .collect(),
                     }],
                     state_hash: format!("{:016x}", now), // TODO: real state hash
                     timestamp: now,
@@ -260,12 +282,16 @@ impl TradingEngine {
         // Search bids and asks for the order
         for level in book.bids.values() {
             for o in &level.orders {
-                if o.id == order_id { return Some(o.user_id.clone()); }
+                if o.id == order_id {
+                    return Some(o.user_id.clone());
+                }
             }
         }
         for level in book.asks.values() {
             for o in &level.orders {
-                if o.id == order_id { return Some(o.user_id.clone()); }
+                if o.id == order_id {
+                    return Some(o.user_id.clone());
+                }
             }
         }
         None

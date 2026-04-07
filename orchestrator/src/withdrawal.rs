@@ -14,7 +14,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use xrpl_mithril_codec::signing;
 
 /// Withdrawal request from user.
@@ -52,7 +52,8 @@ pub async fn process_withdrawal(
     );
 
     // Step 1: Autofill — get account sequence from XRPL
-    let sequence = fetch_account_sequence(xrpl_url, escrow_address).await
+    let sequence = fetch_account_sequence(xrpl_url, escrow_address)
+        .await
         .unwrap_or(1); // fallback for testnet
 
     // Step 2: Build Payment tx JSON
@@ -71,11 +72,10 @@ pub async fn process_withdrawal(
     });
 
     // Step 3: Compute signing hash via xrpl-mithril-codec
-    let tx_map = tx_json.as_object()
-        .context("tx_json is not an object")?;
+    let tx_map = tx_json.as_object().context("tx_json is not an object")?;
     let sign_hash = signing::signing_hash(tx_map)
         .map_err(|e| anyhow::anyhow!("codec signing_hash failed: {:?}", e))?;
-    let sign_hash_hex = hex::encode(&sign_hash);
+    let sign_hash_hex = hex::encode(sign_hash);
 
     info!(
         sign_hash = %sign_hash_hex,
@@ -111,10 +111,7 @@ pub async fn process_withdrawal(
                 });
             }
 
-            let signature_hex = resp["signature"]
-                .as_str()
-                .unwrap_or("")
-                .to_string();
+            let signature_hex = resp["signature"].as_str().unwrap_or("").to_string();
 
             info!(
                 user = %req.user_id,
@@ -127,7 +124,8 @@ pub async fn process_withdrawal(
             signed_tx["TxnSignature"] = serde_json::Value::String(signature_hex.to_uppercase());
 
             // Serialize to binary blob
-            let signed_map = signed_tx.as_object()
+            let signed_map = signed_tx
+                .as_object()
                 .context("signed tx is not an object")?;
             let mut blob = Vec::new();
             xrpl_mithril_codec::serializer::serialize_json_object(signed_map, &mut blob, false)

@@ -252,14 +252,24 @@ async fn perp_client_against_mock() {
     let resp: Value = client
         .post(format!("http://{}/v1/perp/deposit", addr))
         .json(&json!({"user_id": "rTest", "amount": "500.00000000", "xrpl_tx_hash": "hash1"}))
-        .send().await.unwrap().json().await.unwrap();
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert_eq!(resp["status"], "success");
 
     // Update price
     let resp: Value = client
         .post(format!("http://{}/v1/perp/price", addr))
         .json(&json!({"mark_price": "0.55000000", "index_price": "0.55000000", "timestamp": 1000}))
-        .send().await.unwrap().json().await.unwrap();
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert_eq!(resp["status"], "success");
 
     // Open position
@@ -272,13 +282,23 @@ async fn perp_client_against_mock() {
     // Get balance
     let resp: Value = client
         .get(format!("http://{}/v1/perp/balance?user_id=rTest", addr))
-        .send().await.unwrap().json().await.unwrap();
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert_eq!(resp["status"], "success");
 
     // Apply funding
     let resp: Value = client
         .post(format!("http://{}/v1/perp/funding/apply", addr))
         .json(&json!({"funding_rate": "0.00050000", "timestamp": 2000}))
-        .send().await.unwrap().json().await.unwrap();
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert_eq!(resp["status"], "success");
 }

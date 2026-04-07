@@ -46,7 +46,7 @@ pub struct StateCommitment {
 pub fn compute_state_hashes(balance_json: &str) -> Result<(String, String)> {
     use sha2::{Digest, Sha256};
     let snapshot_hash = Sha256::digest(balance_json.as_bytes());
-    let root = Sha256::digest(&snapshot_hash);
+    let root = Sha256::digest(snapshot_hash);
     Ok((hex::encode(root), hex::encode(snapshot_hash)))
 }
 
@@ -68,7 +68,7 @@ pub async fn sign_commitment(
     hasher.update(&root_bytes);
     hasher.update(&snap_bytes);
     let digest = hasher.finalize();
-    let hash_hex = format!("0x{}", hex::encode(&digest));
+    let hash_hex = format!("0x{}", hex::encode(digest));
 
     let client = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
@@ -106,8 +106,8 @@ pub async fn submit_to_sepolia(
     r: [u8; 32],
     s: [u8; 32],
 ) -> Result<String> {
-    let provider = Provider::<Http>::try_from(SEPOLIA_RPC)
-        .context("failed to connect to Sepolia RPC")?;
+    let provider =
+        Provider::<Http>::try_from(SEPOLIA_RPC).context("failed to connect to Sepolia RPC")?;
 
     let wallet: LocalWallet = private_key_hex
         .parse::<LocalWallet>()
@@ -117,17 +117,12 @@ pub async fn submit_to_sepolia(
     let client = SignerMiddleware::new(provider, wallet);
     let client = Arc::new(client);
 
-    let registry_addr: Address = REGISTRY_ADDRESS.parse().context("invalid registry address")?;
+    let registry_addr: Address = REGISTRY_ADDRESS
+        .parse()
+        .context("invalid registry address")?;
     let registry = CommitmentRegistry::new(registry_addr, client);
 
-    let tx = registry.commit(
-        market_id,
-        root,
-        snapshot_hash,
-        v,
-        r.into(),
-        s.into(),
-    );
+    let tx = registry.commit(market_id, root, snapshot_hash, v, r, s);
 
     info!("Submitting commitment to Sepolia...");
     let pending = tx.send().await.context("failed to send tx")?;
@@ -158,8 +153,8 @@ pub async fn submit_to_sepolia(
 /// Query existing commitment from Sepolia.
 #[allow(dead_code)]
 pub async fn query_commitment(market_id: [u8; 32]) -> Result<Option<StateCommitment>> {
-    let provider = Provider::<Http>::try_from(SEPOLIA_RPC)
-        .context("failed to connect to Sepolia RPC")?;
+    let provider =
+        Provider::<Http>::try_from(SEPOLIA_RPC).context("failed to connect to Sepolia RPC")?;
     let client = Arc::new(provider);
 
     let registry_addr: Address = REGISTRY_ADDRESS.parse()?;
@@ -170,8 +165,7 @@ pub async fn query_commitment(market_id: [u8; 32]) -> Result<Option<StateCommitm
         return Ok(None);
     }
 
-    let (root, snapshot_hash, committed_at, committer) =
-        registry.get(market_id).call().await?;
+    let (root, snapshot_hash, committed_at, committer) = registry.get(market_id).call().await?;
 
     Ok(Some(StateCommitment {
         root: hex::encode(root),

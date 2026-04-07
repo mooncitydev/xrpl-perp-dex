@@ -128,7 +128,11 @@ impl ElectionState {
 
     fn handle_message(&mut self, msg: ElectionMessage) {
         match msg {
-            ElectionMessage::Heartbeat { ref peer_id, priority, .. } => {
+            ElectionMessage::Heartbeat {
+                ref peer_id,
+                priority,
+                ..
+            } => {
                 if peer_id == &self.config.our_peer_id {
                     return; // ignore own heartbeats
                 }
@@ -168,7 +172,10 @@ impl ElectionState {
                     self.last_heartbeat = Instant::now();
                 }
             }
-            ElectionMessage::LeaderAnnounce { ref peer_id, priority } => {
+            ElectionMessage::LeaderAnnounce {
+                ref peer_id,
+                priority,
+            } => {
                 if peer_id == &self.config.our_peer_id {
                     return;
                 }
@@ -229,10 +236,7 @@ impl ElectionState {
             priority = self.config.our_priority,
             "promoting self to sequencer"
         );
-        self.leader = Some((
-            self.config.our_peer_id.clone(),
-            self.config.our_priority,
-        ));
+        self.leader = Some((self.config.our_peer_id.clone(), self.config.our_priority));
         self.switch_role(Role::Sequencer);
 
         // Announce leadership (fire-and-forget)

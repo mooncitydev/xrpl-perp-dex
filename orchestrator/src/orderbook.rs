@@ -11,7 +11,7 @@ use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use crate::types::{FP8, Side};
+use crate::types::{Side, FP8};
 
 // ── Order types ─────────────────────────────────────────────────
 
@@ -105,7 +105,10 @@ impl PriceLevel {
     }
 
     fn total_size(&self) -> FP8 {
-        self.orders.iter().map(|o| o.remaining()).fold(FP8::ZERO, |a, b| a + b)
+        self.orders
+            .iter()
+            .map(|o| o.remaining())
+            .fold(FP8::ZERO, |a, b| a + b)
     }
 }
 
@@ -171,6 +174,7 @@ impl OrderBook {
 
     /// Submit a new order. Returns (order, fills).
     /// Fills are produced immediately if the order crosses the book.
+    #[allow(clippy::too_many_arguments)]
     pub fn submit_order(
         &mut self,
         user_id: String,
@@ -353,6 +357,7 @@ impl OrderBook {
     }
 
     /// Get top N levels of the order book.
+    #[allow(clippy::type_complexity)]
     pub fn depth(&self, levels: usize) -> (Vec<(FP8, FP8)>, Vec<(FP8, FP8)>) {
         let bids: Vec<(FP8, FP8)> = self
             .bids
@@ -386,7 +391,9 @@ impl OrderBook {
                 Side::Long => order.order_type == OrderType::Market || price_key <= order.price.0,
                 Side::Short => order.order_type == OrderType::Market || price_key >= order.price.0,
             };
-            if !matches { break; }
+            if !matches {
+                break;
+            }
             for o in &level.orders {
                 if o.user_id != order.user_id {
                     total += o.remaining().0;
@@ -410,8 +417,8 @@ impl OrderBook {
         let mut trades = Vec::new();
 
         let opposite_book = match taker.side {
-            Side::Long => &mut self.asks,   // buyer matches against asks
-            Side::Short => &mut self.bids,  // seller matches against bids
+            Side::Long => &mut self.asks,  // buyer matches against asks
+            Side::Short => &mut self.bids, // seller matches against bids
         };
 
         // Collect matching price levels
@@ -530,9 +537,15 @@ mod tests {
         let mut ob = book();
         let (order, trades) = ob
             .submit_order(
-                "alice".into(), Side::Long, OrderType::Limit,
-                FP8::from_f64(0.55), FP8::from_f64(100.0), 5,
-                TimeInForce::Gtc, false, None,
+                "alice".into(),
+                Side::Long,
+                OrderType::Limit,
+                FP8::from_f64(0.55),
+                FP8::from_f64(100.0),
+                5,
+                TimeInForce::Gtc,
+                false,
+                None,
             )
             .unwrap();
 
@@ -548,17 +561,30 @@ mod tests {
 
         // Alice places buy at 0.55
         ob.submit_order(
-            "alice".into(), Side::Long, OrderType::Limit,
-            FP8::from_f64(0.55), FP8::from_f64(100.0), 5,
-            TimeInForce::Gtc, false, None,
-        ).unwrap();
+            "alice".into(),
+            Side::Long,
+            OrderType::Limit,
+            FP8::from_f64(0.55),
+            FP8::from_f64(100.0),
+            5,
+            TimeInForce::Gtc,
+            false,
+            None,
+        )
+        .unwrap();
 
         // Bob places sell at 0.55 → should match
         let (order, trades) = ob
             .submit_order(
-                "bob".into(), Side::Short, OrderType::Limit,
-                FP8::from_f64(0.55), FP8::from_f64(50.0), 5,
-                TimeInForce::Gtc, false, None,
+                "bob".into(),
+                Side::Short,
+                OrderType::Limit,
+                FP8::from_f64(0.55),
+                FP8::from_f64(50.0),
+                5,
+                TimeInForce::Gtc,
+                false,
+                None,
             )
             .unwrap();
 
@@ -576,16 +602,55 @@ mod tests {
         let mut ob = book();
 
         // Place 3 sell orders at different prices
-        ob.submit_order("s1".into(), Side::Short, OrderType::Limit, FP8::from_f64(0.55), FP8::from_f64(100.0), 5, TimeInForce::Gtc, false, None).unwrap();
-        ob.submit_order("s2".into(), Side::Short, OrderType::Limit, FP8::from_f64(0.56), FP8::from_f64(100.0), 5, TimeInForce::Gtc, false, None).unwrap();
-        ob.submit_order("s3".into(), Side::Short, OrderType::Limit, FP8::from_f64(0.57), FP8::from_f64(100.0), 5, TimeInForce::Gtc, false, None).unwrap();
+        ob.submit_order(
+            "s1".into(),
+            Side::Short,
+            OrderType::Limit,
+            FP8::from_f64(0.55),
+            FP8::from_f64(100.0),
+            5,
+            TimeInForce::Gtc,
+            false,
+            None,
+        )
+        .unwrap();
+        ob.submit_order(
+            "s2".into(),
+            Side::Short,
+            OrderType::Limit,
+            FP8::from_f64(0.56),
+            FP8::from_f64(100.0),
+            5,
+            TimeInForce::Gtc,
+            false,
+            None,
+        )
+        .unwrap();
+        ob.submit_order(
+            "s3".into(),
+            Side::Short,
+            OrderType::Limit,
+            FP8::from_f64(0.57),
+            FP8::from_f64(100.0),
+            5,
+            TimeInForce::Gtc,
+            false,
+            None,
+        )
+        .unwrap();
 
         // Market buy 250 → should fill 100@0.55 + 100@0.56 + 50@0.57
         let (order, trades) = ob
             .submit_order(
-                "buyer".into(), Side::Long, OrderType::Market,
-                FP8::ZERO, FP8::from_f64(250.0), 5,
-                TimeInForce::Ioc, false, None,
+                "buyer".into(),
+                Side::Long,
+                OrderType::Market,
+                FP8::ZERO,
+                FP8::from_f64(250.0),
+                5,
+                TimeInForce::Ioc,
+                false,
+                None,
             )
             .unwrap();
 
@@ -601,11 +666,19 @@ mod tests {
     #[test]
     fn cancel_order() {
         let mut ob = book();
-        let (order, _) = ob.submit_order(
-            "alice".into(), Side::Long, OrderType::Limit,
-            FP8::from_f64(0.55), FP8::from_f64(100.0), 5,
-            TimeInForce::Gtc, false, None,
-        ).unwrap();
+        let (order, _) = ob
+            .submit_order(
+                "alice".into(),
+                Side::Long,
+                OrderType::Limit,
+                FP8::from_f64(0.55),
+                FP8::from_f64(100.0),
+                5,
+                TimeInForce::Gtc,
+                false,
+                None,
+            )
+            .unwrap();
 
         let cancelled = ob.cancel_order(order.id).unwrap();
         assert_eq!(cancelled.status, OrderStatus::Cancelled);
@@ -616,14 +689,33 @@ mod tests {
     fn no_self_trade() {
         let mut ob = book();
 
-        ob.submit_order("alice".into(), Side::Long, OrderType::Limit, FP8::from_f64(0.55), FP8::from_f64(100.0), 5, TimeInForce::Gtc, false, None).unwrap();
+        ob.submit_order(
+            "alice".into(),
+            Side::Long,
+            OrderType::Limit,
+            FP8::from_f64(0.55),
+            FP8::from_f64(100.0),
+            5,
+            TimeInForce::Gtc,
+            false,
+            None,
+        )
+        .unwrap();
 
         // Alice sells — should NOT match her own buy
-        let (_, trades) = ob.submit_order(
-            "alice".into(), Side::Short, OrderType::Limit,
-            FP8::from_f64(0.55), FP8::from_f64(50.0), 5,
-            TimeInForce::Gtc, false, None,
-        ).unwrap();
+        let (_, trades) = ob
+            .submit_order(
+                "alice".into(),
+                Side::Short,
+                OrderType::Limit,
+                FP8::from_f64(0.55),
+                FP8::from_f64(50.0),
+                5,
+                TimeInForce::Gtc,
+                false,
+                None,
+            )
+            .unwrap();
 
         assert!(trades.is_empty());
     }
@@ -631,9 +723,42 @@ mod tests {
     #[test]
     fn depth_snapshot() {
         let mut ob = book();
-        ob.submit_order("a".into(), Side::Long, OrderType::Limit, FP8::from_f64(0.54), FP8::from_f64(100.0), 5, TimeInForce::Gtc, false, None).unwrap();
-        ob.submit_order("b".into(), Side::Long, OrderType::Limit, FP8::from_f64(0.55), FP8::from_f64(200.0), 5, TimeInForce::Gtc, false, None).unwrap();
-        ob.submit_order("c".into(), Side::Short, OrderType::Limit, FP8::from_f64(0.56), FP8::from_f64(150.0), 5, TimeInForce::Gtc, false, None).unwrap();
+        ob.submit_order(
+            "a".into(),
+            Side::Long,
+            OrderType::Limit,
+            FP8::from_f64(0.54),
+            FP8::from_f64(100.0),
+            5,
+            TimeInForce::Gtc,
+            false,
+            None,
+        )
+        .unwrap();
+        ob.submit_order(
+            "b".into(),
+            Side::Long,
+            OrderType::Limit,
+            FP8::from_f64(0.55),
+            FP8::from_f64(200.0),
+            5,
+            TimeInForce::Gtc,
+            false,
+            None,
+        )
+        .unwrap();
+        ob.submit_order(
+            "c".into(),
+            Side::Short,
+            OrderType::Limit,
+            FP8::from_f64(0.56),
+            FP8::from_f64(150.0),
+            5,
+            TimeInForce::Gtc,
+            false,
+            None,
+        )
+        .unwrap();
 
         let (bids, asks) = ob.depth(10);
         assert_eq!(bids.len(), 2);
@@ -646,11 +771,45 @@ mod tests {
     fn price_time_priority() {
         let mut ob = book();
         // Two buys at same price — first should fill first
-        ob.submit_order("alice".into(), Side::Long, OrderType::Limit, FP8::from_f64(0.55), FP8::from_f64(100.0), 5, TimeInForce::Gtc, false, None).unwrap();
-        ob.submit_order("bob".into(), Side::Long, OrderType::Limit, FP8::from_f64(0.55), FP8::from_f64(100.0), 5, TimeInForce::Gtc, false, None).unwrap();
+        ob.submit_order(
+            "alice".into(),
+            Side::Long,
+            OrderType::Limit,
+            FP8::from_f64(0.55),
+            FP8::from_f64(100.0),
+            5,
+            TimeInForce::Gtc,
+            false,
+            None,
+        )
+        .unwrap();
+        ob.submit_order(
+            "bob".into(),
+            Side::Long,
+            OrderType::Limit,
+            FP8::from_f64(0.55),
+            FP8::from_f64(100.0),
+            5,
+            TimeInForce::Gtc,
+            false,
+            None,
+        )
+        .unwrap();
 
         // Sell 50 — should match Alice (first in queue)
-        let (_, trades) = ob.submit_order("charlie".into(), Side::Short, OrderType::Limit, FP8::from_f64(0.55), FP8::from_f64(50.0), 5, TimeInForce::Gtc, false, None).unwrap();
+        let (_, trades) = ob
+            .submit_order(
+                "charlie".into(),
+                Side::Short,
+                OrderType::Limit,
+                FP8::from_f64(0.55),
+                FP8::from_f64(50.0),
+                5,
+                TimeInForce::Gtc,
+                false,
+                None,
+            )
+            .unwrap();
 
         assert_eq!(trades.len(), 1);
         assert_eq!(trades[0].maker_user_id, "alice");
@@ -659,10 +818,33 @@ mod tests {
     #[test]
     fn partial_fill_tracking() {
         let mut ob = book();
-        ob.submit_order("alice".into(), Side::Long, OrderType::Limit, FP8::from_f64(0.55), FP8::from_f64(100.0), 5, TimeInForce::Gtc, false, None).unwrap();
+        ob.submit_order(
+            "alice".into(),
+            Side::Long,
+            OrderType::Limit,
+            FP8::from_f64(0.55),
+            FP8::from_f64(100.0),
+            5,
+            TimeInForce::Gtc,
+            false,
+            None,
+        )
+        .unwrap();
 
         // Partial fill: sell 30
-        let (_, trades) = ob.submit_order("bob".into(), Side::Short, OrderType::Limit, FP8::from_f64(0.55), FP8::from_f64(30.0), 5, TimeInForce::Gtc, false, None).unwrap();
+        let (_, trades) = ob
+            .submit_order(
+                "bob".into(),
+                Side::Short,
+                OrderType::Limit,
+                FP8::from_f64(0.55),
+                FP8::from_f64(30.0),
+                5,
+                TimeInForce::Gtc,
+                false,
+                None,
+            )
+            .unwrap();
         assert_eq!(trades.len(), 1);
 
         // Alice's remaining: 70
@@ -675,9 +857,42 @@ mod tests {
     #[test]
     fn cancel_all_for_user() {
         let mut ob = book();
-        ob.submit_order("alice".into(), Side::Long, OrderType::Limit, FP8::from_f64(0.54), FP8::from_f64(100.0), 5, TimeInForce::Gtc, false, None).unwrap();
-        ob.submit_order("alice".into(), Side::Short, OrderType::Limit, FP8::from_f64(0.56), FP8::from_f64(50.0), 5, TimeInForce::Gtc, false, None).unwrap();
-        ob.submit_order("bob".into(), Side::Long, OrderType::Limit, FP8::from_f64(0.53), FP8::from_f64(200.0), 5, TimeInForce::Gtc, false, None).unwrap();
+        ob.submit_order(
+            "alice".into(),
+            Side::Long,
+            OrderType::Limit,
+            FP8::from_f64(0.54),
+            FP8::from_f64(100.0),
+            5,
+            TimeInForce::Gtc,
+            false,
+            None,
+        )
+        .unwrap();
+        ob.submit_order(
+            "alice".into(),
+            Side::Short,
+            OrderType::Limit,
+            FP8::from_f64(0.56),
+            FP8::from_f64(50.0),
+            5,
+            TimeInForce::Gtc,
+            false,
+            None,
+        )
+        .unwrap();
+        ob.submit_order(
+            "bob".into(),
+            Side::Long,
+            OrderType::Limit,
+            FP8::from_f64(0.53),
+            FP8::from_f64(200.0),
+            5,
+            TimeInForce::Gtc,
+            false,
+            None,
+        )
+        .unwrap();
 
         let cancelled = ob.cancel_all("alice");
         assert_eq!(cancelled.len(), 2);
@@ -698,8 +913,30 @@ mod tests {
         assert_eq!(ob.best_ask(), None);
         assert_eq!(ob.mid_price(), None);
 
-        ob.submit_order("a".into(), Side::Long, OrderType::Limit, FP8::from_f64(0.54), FP8::from_f64(100.0), 5, TimeInForce::Gtc, false, None).unwrap();
-        ob.submit_order("b".into(), Side::Short, OrderType::Limit, FP8::from_f64(0.56), FP8::from_f64(100.0), 5, TimeInForce::Gtc, false, None).unwrap();
+        ob.submit_order(
+            "a".into(),
+            Side::Long,
+            OrderType::Limit,
+            FP8::from_f64(0.54),
+            FP8::from_f64(100.0),
+            5,
+            TimeInForce::Gtc,
+            false,
+            None,
+        )
+        .unwrap();
+        ob.submit_order(
+            "b".into(),
+            Side::Short,
+            OrderType::Limit,
+            FP8::from_f64(0.56),
+            FP8::from_f64(100.0),
+            5,
+            TimeInForce::Gtc,
+            false,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(ob.best_bid(), Some(FP8::from_f64(0.54)));
         assert_eq!(ob.best_ask(), Some(FP8::from_f64(0.56)));
@@ -709,21 +946,82 @@ mod tests {
     #[test]
     fn trade_ids_increment() {
         let mut ob = book();
-        ob.submit_order("alice".into(), Side::Long, OrderType::Limit, FP8::from_f64(0.55), FP8::from_f64(100.0), 5, TimeInForce::Gtc, false, None).unwrap();
-        ob.submit_order("bob".into(), Side::Long, OrderType::Limit, FP8::from_f64(0.56), FP8::from_f64(100.0), 5, TimeInForce::Gtc, false, None).unwrap();
+        ob.submit_order(
+            "alice".into(),
+            Side::Long,
+            OrderType::Limit,
+            FP8::from_f64(0.55),
+            FP8::from_f64(100.0),
+            5,
+            TimeInForce::Gtc,
+            false,
+            None,
+        )
+        .unwrap();
+        ob.submit_order(
+            "bob".into(),
+            Side::Long,
+            OrderType::Limit,
+            FP8::from_f64(0.56),
+            FP8::from_f64(100.0),
+            5,
+            TimeInForce::Gtc,
+            false,
+            None,
+        )
+        .unwrap();
 
-        let (_, trades1) = ob.submit_order("charlie".into(), Side::Short, OrderType::Limit, FP8::from_f64(0.55), FP8::from_f64(200.0), 5, TimeInForce::Gtc, false, None).unwrap();
+        let (_, trades1) = ob
+            .submit_order(
+                "charlie".into(),
+                Side::Short,
+                OrderType::Limit,
+                FP8::from_f64(0.55),
+                FP8::from_f64(200.0),
+                5,
+                TimeInForce::Gtc,
+                false,
+                None,
+            )
+            .unwrap();
 
         // Should produce 2 trades (match bob@0.56 first, then alice@0.55)
         assert_eq!(trades1.len(), 2);
-        assert!(trades1[0].trade_id < trades1[1].trade_id, "trade IDs should increment");
+        assert!(
+            trades1[0].trade_id < trades1[1].trade_id,
+            "trade IDs should increment"
+        );
     }
 
     #[test]
     fn order_ids_increment() {
         let mut ob = book();
-        let (o1, _) = ob.submit_order("a".into(), Side::Long, OrderType::Limit, FP8::from_f64(0.55), FP8::from_f64(100.0), 5, TimeInForce::Gtc, false, None).unwrap();
-        let (o2, _) = ob.submit_order("b".into(), Side::Short, OrderType::Limit, FP8::from_f64(0.56), FP8::from_f64(100.0), 5, TimeInForce::Gtc, false, None).unwrap();
+        let (o1, _) = ob
+            .submit_order(
+                "a".into(),
+                Side::Long,
+                OrderType::Limit,
+                FP8::from_f64(0.55),
+                FP8::from_f64(100.0),
+                5,
+                TimeInForce::Gtc,
+                false,
+                None,
+            )
+            .unwrap();
+        let (o2, _) = ob
+            .submit_order(
+                "b".into(),
+                Side::Short,
+                OrderType::Limit,
+                FP8::from_f64(0.56),
+                FP8::from_f64(100.0),
+                5,
+                TimeInForce::Gtc,
+                false,
+                None,
+            )
+            .unwrap();
         assert!(o2.id > o1.id, "order IDs should increment");
     }
 }

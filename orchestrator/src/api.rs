@@ -31,7 +31,7 @@ use crate::auth;
 use crate::orderbook::{OrderType, TimeInForce};
 use crate::perp_client::PerpClient;
 use crate::trading::TradingEngine;
-use crate::types::{FP8, Side};
+use crate::types::{Side, FP8};
 use crate::ws::{self, WsEvent};
 
 // ── App state ───────────────────────────────────────────────────
@@ -73,9 +73,15 @@ pub struct SubmitOrderRequest {
     pub client_order_id: Option<String>,
 }
 
-fn default_limit() -> String { "limit".into() }
-fn default_leverage() -> u32 { 1 }
-fn default_gtc() -> String { "gtc".into() }
+fn default_limit() -> String {
+    "limit".into()
+}
+fn default_leverage() -> u32 {
+    1
+}
+fn default_gtc() -> String {
+    "gtc".into()
+}
 
 #[derive(Serialize)]
 struct ApiResponse<T: Serialize> {
@@ -103,11 +109,23 @@ pub struct DepthQuery {
 // ── Helpers ─────────────────────────────────────────────────────
 
 fn ok<T: Serialize>(data: T) -> (StatusCode, Json<ApiResponse<T>>) {
-    (StatusCode::OK, Json(ApiResponse { status: "success".into(), data }))
+    (
+        StatusCode::OK,
+        Json(ApiResponse {
+            status: "success".into(),
+            data,
+        }),
+    )
 }
 
 fn err(code: StatusCode, msg: &str) -> impl IntoResponse {
-    (code, Json(ErrorResponse { status: "error".into(), message: msg.into() }))
+    (
+        code,
+        Json(ErrorResponse {
+            status: "error".into(),
+            message: msg.into(),
+        }),
+    )
 }
 
 fn parse_side(s: &str) -> Result<Side, String> {
@@ -178,7 +196,8 @@ async fn attestation_quote(
         "0x00".to_string()
     } else {
         match serde_json::from_slice::<serde_json::Value>(&body) {
-            Ok(v) => v.get("user_data")
+            Ok(v) => v
+                .get("user_data")
                 .and_then(|u| u.as_str())
                 .unwrap_or("0x00")
                 .to_string(),
@@ -189,7 +208,11 @@ async fn attestation_quote(
     // Proxy to enclave attestation-quote endpoint
     let _enclave_url = format!(
         "{}/pool/attestation-quote",
-        state.perp.base_url().replace("/v1", "").replace("/perp", "")
+        state
+            .perp
+            .base_url()
+            .replace("/v1", "")
+            .replace("/perp", "")
     );
 
     let client = reqwest::Client::builder()
@@ -198,35 +221,48 @@ async fn attestation_quote(
         .build()
         .unwrap();
 
-    match client.post(&format!("{}/v1/pool/attestation-quote",
-            state.perp.base_url().trim_end_matches("/v1").trim_end_matches("/")))
+    match client
+        .post(format!(
+            "{}/v1/pool/attestation-quote",
+            state
+                .perp
+                .base_url()
+                .trim_end_matches("/v1")
+                .trim_end_matches("/")
+        ))
         .json(&serde_json::json!({"user_data": user_data}))
         .send()
         .await
     {
-        Ok(resp) => {
-            match resp.json::<serde_json::Value>().await {
-                Ok(data) => {
-                    if data.get("status").and_then(|s| s.as_str()) == Some("success") {
-                        (StatusCode::OK, Json(data)).into_response()
-                    } else {
-                        (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({
+        Ok(resp) => match resp.json::<serde_json::Value>().await {
+            Ok(data) => {
+                if data.get("status").and_then(|s| s.as_str()) == Some("success") {
+                    (StatusCode::OK, Json(data)).into_response()
+                } else {
+                    (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({
                             "status": "error",
                             "message": "DCAP attestation not available on this platform. Use Azure DCsv3 for hardware attestation.",
                             "enclave_response": data
                         }))).into_response()
-                    }
                 }
-                Err(e) => (StatusCode::BAD_GATEWAY, Json(serde_json::json!({
+            }
+            Err(e) => (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({
                     "status": "error",
                     "message": format!("Failed to parse enclave response: {}", e)
-                }))).into_response()
-            }
-        }
-        Err(e) => (StatusCode::BAD_GATEWAY, Json(serde_json::json!({
-            "status": "error",
-            "message": format!("Failed to reach enclave: {}", e)
-        }))).into_response()
+                })),
+            )
+                .into_response(),
+        },
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({
+                "status": "error",
+                "message": format!("Failed to reach enclave: {}", e)
+            })),
+        )
+            .into_response(),
     }
 }
 
@@ -395,7 +431,11 @@ async fn submit_order(
     Json(req): Json<SubmitOrderRequest>,
 ) -> impl IntoResponse {
     if !state.is_sequencer.load(Ordering::Relaxed) {
-        return err(StatusCode::SERVICE_UNAVAILABLE, "this node is not the sequencer").into_response();
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this node is not the sequencer",
+        )
+        .into_response();
     }
 
     let side = match parse_side(&req.side) {
@@ -418,7 +458,9 @@ async fn submit_order(
                 Ok(fp) => fp,
                 Err(_) => return err(StatusCode::BAD_REQUEST, "invalid price").into_response(),
             },
-            None => return err(StatusCode::BAD_REQUEST, "limit order requires price").into_response(),
+            None => {
+                return err(StatusCode::BAD_REQUEST, "limit order requires price").into_response()
+            }
         },
     };
 
@@ -432,17 +474,21 @@ async fn submit_order(
         return err(StatusCode::BAD_REQUEST, "leverage must be 1-20").into_response();
     }
 
-    match state.engine.submit_order(
-        req.user_id,
-        side,
-        order_type,
-        price,
-        size,
-        req.leverage,
-        tif,
-        req.reduce_only,
-        req.client_order_id,
-    ).await {
+    match state
+        .engine
+        .submit_order(
+            req.user_id,
+            side,
+            order_type,
+            price,
+            size,
+            req.leverage,
+            tif,
+            req.reduce_only,
+            req.client_order_id,
+        )
+        .await
+    {
         Ok(result) => {
             // Broadcast trade events via WebSocket
             for t in &result.trades {
@@ -460,21 +506,31 @@ async fn submit_order(
             if !result.trades.is_empty() {
                 let (bids, asks) = state.engine.depth(20).await;
                 let _ = state.ws_tx.send(WsEvent::Orderbook {
-                    bids: bids.iter().map(|(p, s)| [p.to_string(), s.to_string()]).collect(),
-                    asks: asks.iter().map(|(p, s)| [p.to_string(), s.to_string()]).collect(),
+                    bids: bids
+                        .iter()
+                        .map(|(p, s)| [p.to_string(), s.to_string()])
+                        .collect(),
+                    asks: asks
+                        .iter()
+                        .map(|(p, s)| [p.to_string(), s.to_string()])
+                        .collect(),
                 });
             }
 
-            let trades_json: Vec<serde_json::Value> = result.trades.iter().map(|t| {
-                serde_json::json!({
-                    "trade_id": t.trade_id,
-                    "price": t.price.to_string(),
-                    "size": t.size.to_string(),
-                    "maker_user_id": t.maker_user_id,
-                    "taker_user_id": t.taker_user_id,
-                    "taker_side": format!("{}", t.taker_side),
+            let trades_json: Vec<serde_json::Value> = result
+                .trades
+                .iter()
+                .map(|t| {
+                    serde_json::json!({
+                        "trade_id": t.trade_id,
+                        "price": t.price.to_string(),
+                        "size": t.size.to_string(),
+                        "maker_user_id": t.maker_user_id,
+                        "taker_user_id": t.taker_user_id,
+                        "taker_side": format!("{}", t.taker_side),
+                    })
                 })
-            }).collect();
+                .collect();
 
             ok(serde_json::json!({
                 "order_id": result.order.id,
@@ -483,7 +539,8 @@ async fn submit_order(
                 "remaining": result.order.remaining().to_string(),
                 "trades": trades_json,
                 "failed_fills": result.failed_fills.len(),
-            })).into_response()
+            }))
+            .into_response()
         }
         Err(e) => {
             error!("submit_order error: {}", e);
@@ -501,7 +558,8 @@ async fn cancel_order(
     if let Some(user) = request.extensions().get::<auth::AuthenticatedUser>() {
         if let Some(owner) = state.engine.order_owner(order_id).await {
             if owner != user.xrpl_address {
-                return err(StatusCode::FORBIDDEN, "cannot cancel another user's order").into_response();
+                return err(StatusCode::FORBIDDEN, "cannot cancel another user's order")
+                    .into_response();
             }
         }
     }
@@ -510,7 +568,8 @@ async fn cancel_order(
         Ok(order) => ok(serde_json::json!({
             "order_id": order.id,
             "status": format!("{:?}", order.status),
-        })).into_response(),
+        }))
+        .into_response(),
         Err(e) => err(StatusCode::NOT_FOUND, &e.to_string()).into_response(),
     }
 }
@@ -521,12 +580,15 @@ async fn cancel_all_orders(
 ) -> impl IntoResponse {
     let user_id = match params.user_id {
         Some(id) => id,
-        None => return err(StatusCode::BAD_REQUEST, "user_id query param required").into_response(),
+        None => {
+            return err(StatusCode::BAD_REQUEST, "user_id query param required").into_response()
+        }
     };
     let cancelled = state.engine.cancel_all(&user_id).await;
     ok(serde_json::json!({
         "cancelled": cancelled.len(),
-    })).into_response()
+    }))
+    .into_response()
 }
 
 async fn get_orders(
@@ -535,21 +597,26 @@ async fn get_orders(
 ) -> impl IntoResponse {
     let user_id = match params.user_id {
         Some(id) => id,
-        None => return err(StatusCode::BAD_REQUEST, "user_id query param required").into_response(),
+        None => {
+            return err(StatusCode::BAD_REQUEST, "user_id query param required").into_response()
+        }
     };
     let orders = state.engine.user_orders(&user_id).await;
-    let orders_json: Vec<serde_json::Value> = orders.iter().map(|o| {
-        serde_json::json!({
-            "order_id": o.id,
-            "side": format!("{}", o.side),
-            "type": format!("{:?}", o.order_type),
-            "price": o.price.to_string(),
-            "size": o.size.to_string(),
-            "filled": o.filled.to_string(),
-            "remaining": o.remaining().to_string(),
-            "status": format!("{:?}", o.status),
+    let orders_json: Vec<serde_json::Value> = orders
+        .iter()
+        .map(|o| {
+            serde_json::json!({
+                "order_id": o.id,
+                "side": format!("{}", o.side),
+                "type": format!("{:?}", o.order_type),
+                "price": o.price.to_string(),
+                "size": o.size.to_string(),
+                "filled": o.filled.to_string(),
+                "remaining": o.remaining().to_string(),
+                "status": format!("{:?}", o.status),
+            })
         })
-    }).collect();
+        .collect();
     ok(serde_json::json!({ "orders": orders_json })).into_response()
 }
 
@@ -559,7 +626,9 @@ async fn get_balance(
 ) -> impl IntoResponse {
     let user_id = match params.user_id {
         Some(id) => id,
-        None => return err(StatusCode::BAD_REQUEST, "user_id query param required").into_response(),
+        None => {
+            return err(StatusCode::BAD_REQUEST, "user_id query param required").into_response()
+        }
     };
     match state.perp.get_balance(&user_id).await {
         Ok(val) => (StatusCode::OK, Json(val)).into_response(),
@@ -575,17 +644,20 @@ async fn get_orderbook(
     let levels = params.levels.unwrap_or(20).min(100); // cap at 100
     let (bids, asks) = state.engine.depth(levels).await;
 
-    let bids_json: Vec<[String; 2]> = bids.iter()
+    let bids_json: Vec<[String; 2]> = bids
+        .iter()
         .map(|(p, s)| [p.to_string(), s.to_string()])
         .collect();
-    let asks_json: Vec<[String; 2]> = asks.iter()
+    let asks_json: Vec<[String; 2]> = asks
+        .iter()
         .map(|(p, s)| [p.to_string(), s.to_string()])
         .collect();
 
     ok(serde_json::json!({
         "bids": bids_json,
         "asks": asks_json,
-    })).into_response()
+    }))
+    .into_response()
 }
 
 async fn get_ticker(
@@ -597,7 +669,8 @@ async fn get_ticker(
         "best_bid": bid.map(|p| p.to_string()),
         "best_ask": ask.map(|p| p.to_string()),
         "mid_price": mid.map(|p| p.to_string()),
-    })).into_response()
+    }))
+    .into_response()
 }
 
 async fn get_trades(
@@ -605,15 +678,20 @@ async fn get_trades(
     Path(_market): Path<String>,
 ) -> impl IntoResponse {
     let trades = state.engine.recent_trades().await;
-    let trades_json: Vec<serde_json::Value> = trades.iter().rev().take(100).map(|t| {
-        serde_json::json!({
-            "trade_id": t.trade_id,
-            "price": t.price.to_string(),
-            "size": t.size.to_string(),
-            "taker_side": format!("{}", t.taker_side),
-            "timestamp_ms": t.timestamp_ms,
+    let trades_json: Vec<serde_json::Value> = trades
+        .iter()
+        .rev()
+        .take(100)
+        .map(|t| {
+            serde_json::json!({
+                "trade_id": t.trade_id,
+                "price": t.price.to_string(),
+                "size": t.size.to_string(),
+                "taker_side": format!("{}", t.taker_side),
+                "timestamp_ms": t.timestamp_ms,
+            })
         })
-    }).collect();
+        .collect();
     ok(serde_json::json!({ "trades": trades_json })).into_response()
 }
 
@@ -630,7 +708,8 @@ async fn get_funding(
         "mark_price": FP8(mark_raw).to_string(),
         "next_funding_time": last_ts + 8 * 3600,
         "interval_hours": 8,
-    })).into_response()
+    }))
+    .into_response()
 }
 
 async fn withdraw(
@@ -638,7 +717,8 @@ async fn withdraw(
     Json(req): Json<crate::withdrawal::WithdrawRequest>,
 ) -> impl IntoResponse {
     // Validate XRPL destination address format
-    if !req.destination.starts_with('r') || req.destination.len() < 25 || req.destination.len() > 35 {
+    if !req.destination.starts_with('r') || req.destination.len() < 25 || req.destination.len() > 35
+    {
         return err(StatusCode::BAD_REQUEST, "invalid XRPL destination address").into_response();
     }
 
@@ -647,11 +727,18 @@ async fn withdraw(
     let session_key = match std::fs::read_to_string("/tmp/perp-9088/escrow_account.json")
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| v["session_key"].as_str().map(|s| s.trim_start_matches("0x").to_string()))
-    {
+        .and_then(|v| {
+            v["session_key"]
+                .as_str()
+                .map(|s| s.trim_start_matches("0x").to_string())
+        }) {
         Some(key) if key.len() == 64 => key,
         _ => {
-            return err(StatusCode::SERVICE_UNAVAILABLE, "escrow signing key not configured").into_response();
+            return err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "escrow signing key not configured",
+            )
+            .into_response();
         }
     };
 
@@ -677,9 +764,7 @@ async fn withdraw(
     }
 }
 
-async fn get_markets(
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+async fn get_markets(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let mark_raw = state.mark_price.load(Ordering::Relaxed);
     let (bid, ask, _) = state.engine.ticker().await;
 
@@ -697,5 +782,6 @@ async fn get_markets(
             "funding_interval_hours": 8,
             "status": "active",
         }]
-    })).into_response()
+    }))
+    .into_response()
 }

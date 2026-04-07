@@ -149,17 +149,36 @@ mod tests {
     fn all_events_have_type_field() {
         let events: Vec<WsEvent> = vec![
             WsEvent::Trade {
-                trade_id: 0, price: "0".into(), size: "0".into(),
-                taker_side: "long".into(), maker_user_id: "a".into(),
-                taker_user_id: "b".into(), timestamp_ms: 0,
+                trade_id: 0,
+                price: "0".into(),
+                size: "0".into(),
+                taker_side: "long".into(),
+                maker_user_id: "a".into(),
+                taker_user_id: "b".into(),
+                timestamp_ms: 0,
             },
-            WsEvent::Orderbook { bids: vec![], asks: vec![] },
-            WsEvent::Ticker { mark_price: "0".into(), index_price: "0".into(), timestamp: 0 },
-            WsEvent::Liquidation { position_id: 0, user_id: "a".into(), price: "0".into() },
+            WsEvent::Orderbook {
+                bids: vec![],
+                asks: vec![],
+            },
+            WsEvent::Ticker {
+                mark_price: "0".into(),
+                index_price: "0".into(),
+                timestamp: 0,
+            },
+            WsEvent::Liquidation {
+                position_id: 0,
+                user_id: "a".into(),
+                price: "0".into(),
+            },
         ];
         for event in events {
             let json = serde_json::to_string(&event).unwrap();
-            assert!(json.contains("\"type\":"), "missing type field in: {}", json);
+            assert!(
+                json.contains("\"type\":"),
+                "missing type field in: {}",
+                json
+            );
         }
     }
 }
