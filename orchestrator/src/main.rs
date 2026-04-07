@@ -320,6 +320,7 @@ async fn main() -> Result<()> {
     let validator_perp = PerpClient::new(&cli.enclave_url)?;
     let _validator_handle = tokio::spawn(async move {
         let mut last_seq: u64 = 0;
+            let mut known_leader: Option<String> = None;
         while let Some(batch) = batch_rx.recv().await {
             if is_seq_validator.load(Ordering::Relaxed) {
                 continue; // sequencer doesn't replay its own batches
@@ -327,14 +328,22 @@ async fn main() -> Result<()> {
 
             let total_fills: usize = batch.orders.iter().map(|o| o.fills.len()).sum();
 
-            // Verify batch is from the expected sequencer
+            // Verify batch source consistency — if we've seen batches from a sequencer,
+            // reject batches from a different sequencer (potential rogue node)
             if !batch.sequencer_id.is_empty() {
-                // TODO: compare batch.sequencer_id with current elected leader peer_id
-                // For now, log it for audit trail
-                tracing::debug!(
-                    sequencer = %batch.sequencer_id,
-                    "batch source"
-                );
+                if let Some(ref known) = known_leader {
+                    if *known != batch.sequencer_id {
+                        warn!(
+                            known = %known,
+                            got = %batch.sequencer_id,
+                            "batch from unexpected sequencer — ignoring"
+                        );
+                        continue;
+                    }
+                } else {
+                    info!(sequencer = %batch.sequencer_id, "accepted sequencer identity");
+                    known_leader = Some(batch.sequencer_id.clone());
+                }
             }
 
             info!(
