@@ -22,6 +22,8 @@ pub struct TradingEngine {
     batch_tx: Option<mpsc::Sender<OrderBatch>>,
     /// Monotonic batch sequence number.
     seq_num: AtomicU64,
+    /// Our P2P peer ID (for sequencer_id in batches).
+    peer_id: String,
 }
 
 /// Result of submitting an order.
@@ -42,12 +44,13 @@ pub struct FailedFill {
 }
 
 impl TradingEngine {
-    pub fn new(market: &str, perp: PerpClient) -> Self {
+    pub fn new(market: &str, perp: PerpClient, peer_id: &str) -> Self {
         TradingEngine {
             book: Mutex::new(OrderBook::new(market)),
             perp,
             batch_tx: None,
             seq_num: AtomicU64::new(1),
+            peer_id: peer_id.to_string(),
         }
     }
 
@@ -260,7 +263,7 @@ impl TradingEngine {
                     }],
                     state_hash: format!("{:016x}", now), // TODO: real state hash
                     timestamp: now,
-                    sequencer_id: String::new(), // filled by P2P layer
+                    sequencer_id: self.peer_id.clone(),
                 };
 
                 if let Err(e) = tx.send(batch).await {

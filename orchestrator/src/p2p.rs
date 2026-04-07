@@ -375,5 +375,21 @@ mod tests {
         assert_eq!(decoded.seq_num, 1);
         assert_eq!(decoded.orders.len(), 1);
         assert_eq!(decoded.orders[0].fills.len(), 1);
+        assert_eq!(decoded.sequencer_id, "12D3KooW...");
+    }
+
+    #[test]
+    fn sequencer_id_preserved_in_batch() {
+        let batch = OrderBatch {
+            seq_num: 42,
+            orders: vec![],
+            state_hash: "hash".into(),
+            timestamp: 0,
+            sequencer_id: "/ip4/0.0.0.0/tcp/4001:p0".into(),
+        };
+        let json = serde_json::to_string(&batch).unwrap();
+        let decoded: OrderBatch = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.sequencer_id, "/ip4/0.0.0.0/tcp/4001:p0");
+        assert!(!decoded.sequencer_id.is_empty());
     }
 }

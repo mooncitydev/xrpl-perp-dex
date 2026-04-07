@@ -190,8 +190,9 @@ async fn main() -> Result<()> {
     }
 
     // Create trading engine — always wire batch publisher (gated by is_sequencer flag)
+    let node_id = format!("{}:p{}", cli.p2p_listen, cli.priority);
     let (trade_batch_tx, mut trade_batch_rx) = tokio::sync::mpsc::channel::<p2p::OrderBatch>(100);
-    let mut engine = TradingEngine::new(&cli.market, perp_for_api);
+    let mut engine = TradingEngine::new(&cli.market, perp_for_api, &node_id);
     engine = engine.with_batch_publisher(trade_batch_tx.clone());
 
     let is_sequencer = Arc::new(AtomicBool::new(cli.priority == 0));
