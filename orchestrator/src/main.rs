@@ -308,22 +308,86 @@ async fn main() -> Result<()> {
         p2p_node.run().await;
     });
 
-    // Validator: process received batches from P2P (only when not sequencer)
+    // Validator: replay received batches from sequencer via P2P
     let is_seq_validator = is_sequencer.clone();
+    let validator_perp = PerpClient::new(&cli.enclave_url)?;
     let _validator_handle = tokio::spawn(async move {
+        let mut last_seq: u64 = 0;
         while let Some(batch) = batch_rx.recv().await {
-            if !is_seq_validator.load(Ordering::Relaxed) {
-                info!(
-                    seq = batch.seq_num,
-                    orders = batch.orders.len(),
-                    fills = batch.orders.iter().map(|o| o.fills.len()).sum::<usize>(),
-                    hash = %batch.state_hash,
-                    "received batch from sequencer — replaying"
-                );
-                // TODO: replay orders against local order book
-                // TODO: call enclave open_position for each fill
-                // TODO: verify state_hash matches after replay
+            if is_seq_validator.load(Ordering::Relaxed) {
+                continue; // sequencer doesn't replay its own batches
             }
+
+            let total_fills: usize = batch.orders.iter().map(|o| o.fills.len()).sum();
+            info!(
+                seq = batch.seq_num,
+                orders = batch.orders.len(),
+                fills = total_fills,
+                hash = %batch.state_hash,
+                "replaying batch from sequencer"
+            );
+
+            // Check sequence ordering
+            if batch.seq_num != last_seq + 1 && last_seq > 0 {
+                warn!(
+                    expected = last_seq + 1,
+                    got = batch.seq_num,
+                    "batch sequence gap detected"
+                );
+            }
+            last_seq = batch.seq_num;
+
+            // Replay each fill: open positions in local enclave
+            for order in &batch.orders {
+                for fill in &order.fills {
+                    // Determine maker/taker sides
+                    let (taker_side, maker_side) = match fill.taker_side.as_str() {
+                        "long" => ("long", "short"),
+                        _ => ("short", "long"),
+                    };
+
+                    // Open taker position
+                    if let Err(e) = validator_perp
+                        .open_position(
+                            &order.user_id,
+                            taker_side,
+                            &fill.size,
+                            &fill.price,
+                            order.leverage,
+                        )
+                        .await
+                    {
+                        warn!(
+                            trade_id = fill.trade_id,
+                            user = %order.user_id,
+                            "taker replay failed: {}",
+                            e
+                        );
+                    }
+
+                    // Open maker position
+                    if let Err(e) = validator_perp
+                        .open_position(
+                            &fill.maker_user_id,
+                            maker_side,
+                            &fill.size,
+                            &fill.price,
+                            order.leverage,
+                        )
+                        .await
+                    {
+                        warn!(
+                            trade_id = fill.trade_id,
+                            user = %fill.maker_user_id,
+                            "maker replay failed: {}",
+                            e
+                        );
+                    }
+                }
+            }
+
+            // TODO: compute local state hash and compare with batch.state_hash
+            // If mismatch → flag discrepancy, refuse to co-sign withdrawals
         }
     });
 

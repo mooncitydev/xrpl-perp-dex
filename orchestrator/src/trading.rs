@@ -202,6 +202,7 @@ impl TradingEngine {
                             trade_id: t.trade_id,
                             maker_order_id: t.maker_order_id,
                             taker_order_id: t.taker_order_id,
+                            maker_user_id: t.maker_user_id.clone(),
                             price: t.price.to_string(),
                             size: t.size.to_string(),
                             taker_side: format!("{}", t.taker_side),
