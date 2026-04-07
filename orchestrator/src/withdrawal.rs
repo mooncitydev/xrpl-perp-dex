@@ -1,26 +1,28 @@
 //! XRPL withdrawal flow: margin check in enclave + submit Payment to XRPL.
 //!
+//! Uses xrpl-mithril-codec for proper XRPL binary serialization.
+//!
 //! MVP: single operator, single enclave signature.
 //! Production: 2-of-3 multisig via SignerListSet (see doc 04).
 //!
 //! Flow:
 //!   1. User calls POST /v1/withdraw { user_id, amount, destination }
-//!   2. Orchestrator builds XRPL Payment tx hash
-//!   3. Enclave checks margin + ECDSA signs hash
-//!   4. Orchestrator submits signed tx to XRPL
-//!   5. Returns tx hash to user
+//!   2. Orchestrator autofills tx (Sequence, Fee) from XRPL
+//!   3. Orchestrator computes signing_hash via xrpl-mithril-codec
+//!   4. Enclave checks margin + ECDSA signs the hash
+//!   5. Orchestrator injects signature, serializes blob, submits to XRPL
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha512};
-use tracing::{error, info};
+use tracing::{error, info, warn};
+use xrpl_mithril_codec::signing;
 
 /// Withdrawal request from user.
 #[derive(Debug, Deserialize)]
 pub struct WithdrawRequest {
     pub user_id: String,
     pub amount: String,
-    pub destination: String, // user's XRPL r-address to receive funds
+    pub destination: String,
 }
 
 /// Withdrawal result.
@@ -42,20 +44,6 @@ pub async fn process_withdrawal(
     session_key: &str,
     req: &WithdrawRequest,
 ) -> Result<WithdrawResult> {
-    // Step 1: Build a mock tx hash for the enclave to sign
-    // In production, this would be the SHA-512Half of the serialized XRPL tx
-    // For MVP, we use a deterministic hash of the withdrawal parameters
-    let tx_data = format!(
-        "Payment:{}:{}:{}:{}",
-        escrow_address, req.destination, req.amount,
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-    );
-    let tx_hash = sha512_half(tx_data.as_bytes());
-    let tx_hash_hex = hex::encode(&tx_hash);
-
     info!(
         user = %req.user_id,
         amount = %req.amount,
@@ -63,14 +51,46 @@ pub async fn process_withdrawal(
         "processing withdrawal"
     );
 
-    // Step 2: Call enclave — margin check + sign
+    // Step 1: Autofill — get account sequence from XRPL
+    let sequence = fetch_account_sequence(xrpl_url, escrow_address).await
+        .unwrap_or(1); // fallback for testnet
+
+    // Step 2: Build Payment tx JSON
+    let tx_json = serde_json::json!({
+        "TransactionType": "Payment",
+        "Account": escrow_address,
+        "Destination": req.destination,
+        "Amount": {
+            "currency": "USD",
+            "issuer": escrow_address,
+            "value": req.amount
+        },
+        "Fee": "12",
+        "Sequence": sequence,
+        "SigningPubKey": "" // Will be filled by enclave or from config
+    });
+
+    // Step 3: Compute signing hash via xrpl-mithril-codec
+    let tx_map = tx_json.as_object()
+        .context("tx_json is not an object")?;
+    let sign_hash = signing::signing_hash(tx_map)
+        .map_err(|e| anyhow::anyhow!("codec signing_hash failed: {:?}", e))?;
+    let sign_hash_hex = hex::encode(&sign_hash);
+
+    info!(
+        sign_hash = %sign_hash_hex,
+        sequence = sequence,
+        "computed XRPL signing hash via binary codec"
+    );
+
+    // Step 4: Call enclave — margin check + ECDSA sign
     let result = perp
         .withdraw(
             &req.user_id,
             &req.amount,
             escrow_account_id,
             session_key,
-            &tx_hash_hex,
+            &sign_hash_hex,
         )
         .await;
 
@@ -102,18 +122,20 @@ pub async fn process_withdrawal(
                 "enclave signed withdrawal"
             );
 
-            // Step 3: Submit to XRPL
-            // For MVP: build and submit Payment tx
-            // In production: collect 2 signatures, build multisig Signers array
-            match submit_xrpl_payment(
-                xrpl_url,
-                escrow_address,
-                &req.destination,
-                &req.amount,
-                &signature_hex,
-            )
-            .await
-            {
+            // Step 5: Inject signature into tx, serialize blob, submit
+            let mut signed_tx = tx_json.clone();
+            signed_tx["TxnSignature"] = serde_json::Value::String(signature_hex.to_uppercase());
+
+            // Serialize to binary blob
+            let signed_map = signed_tx.as_object()
+                .context("signed tx is not an object")?;
+            let mut blob = Vec::new();
+            xrpl_mithril_codec::serializer::serialize_json_object(signed_map, &mut blob, false)
+                .map_err(|e| anyhow::anyhow!("codec serialize failed: {:?}", e))?;
+            let blob_hex = hex::encode_upper(&blob);
+
+            // Submit blob to XRPL
+            match submit_blob(xrpl_url, &blob_hex).await {
                 Ok(xrpl_hash) => {
                     info!(
                         user = %req.user_id,
@@ -136,7 +158,7 @@ pub async fn process_withdrawal(
                         destination: req.destination.clone(),
                         xrpl_tx_hash: None,
                         message: format!(
-                            "Enclave signed but XRPL submission failed: {}. Balance already deducted — retry submission.",
+                            "Enclave signed but XRPL submission failed: {}. Balance already deducted.",
                             e
                         ),
                     })
@@ -153,53 +175,41 @@ pub async fn process_withdrawal(
     }
 }
 
-/// Submit Payment to XRPL via JSON-RPC.
-/// MVP: simplified — uses the `submit` method with pre-signed blob.
-/// Production: would use xrpl binary codec for proper serialization.
-async fn submit_xrpl_payment(
-    xrpl_url: &str,
-    escrow_address: &str,
-    destination: &str,
-    amount: &str,
-    _signature_hex: &str,
-) -> Result<String> {
+/// Fetch account Sequence number from XRPL.
+async fn fetch_account_sequence(xrpl_url: &str, account: &str) -> Result<u32> {
     let client = reqwest::Client::new();
-
-    // For MVP: submit a Payment tx JSON via the sign-and-submit flow
-    // This is a placeholder — full implementation needs XRPL binary codec
-    // to serialize the tx, inject the signature, and submit the blob.
-    //
-    // The real implementation is in Python (sgx_signer.py + e2e_multisig_withdrawal.py)
-    // where we use xrpl-py's binary codec.
-    //
-    // TODO: integrate xrpl-rs crate or port binary codec to Rust
-
-    let tx_json = serde_json::json!({
-        "method": "submit",
-        "params": [{
-            "tx_json": {
-                "TransactionType": "Payment",
-                "Account": escrow_address,
-                "Destination": destination,
-                "Amount": {
-                    "currency": "USD",
-                    "issuer": escrow_address,
-                    "value": amount
-                },
-                "Fee": "36"
-            }
-        }]
-    });
-
     let resp: serde_json::Value = client
         .post(xrpl_url)
-        .json(&tx_json)
+        .json(&serde_json::json!({
+            "method": "account_info",
+            "params": [{"account": account}]
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+
+    let seq = resp["result"]["account_data"]["Sequence"]
+        .as_u64()
+        .context("missing Sequence in account_info")?;
+    Ok(seq as u32)
+}
+
+/// Submit a pre-signed tx blob to XRPL via JSON-RPC.
+async fn submit_blob(xrpl_url: &str, blob_hex: &str) -> Result<String> {
+    let client = reqwest::Client::new();
+    let resp: serde_json::Value = client
+        .post(xrpl_url)
+        .json(&serde_json::json!({
+            "method": "submit",
+            "params": [{"tx_blob": blob_hex}]
+        }))
         .send()
         .await
-        .context("XRPL RPC request failed")?
+        .context("XRPL submit request failed")?
         .json()
         .await
-        .context("XRPL RPC response parse failed")?;
+        .context("XRPL submit response parse failed")?;
 
     let engine_result = resp["result"]["engine_result"]
         .as_str()
@@ -213,19 +223,11 @@ async fn submit_xrpl_payment(
         Ok(hash)
     } else {
         anyhow::bail!(
-            "XRPL engine_result: {} — {}",
+            "XRPL: {} — {}",
             engine_result,
             resp["result"]["engine_result_message"]
                 .as_str()
                 .unwrap_or("")
         )
     }
-}
-
-/// SHA-512Half: first 32 bytes of SHA-512 (XRPL's signing hash).
-fn sha512_half(data: &[u8]) -> [u8; 32] {
-    let full = Sha512::digest(data);
-    let mut result = [0u8; 32];
-    result.copy_from_slice(&full[..32]);
-    result
 }

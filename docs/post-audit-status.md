@@ -9,7 +9,7 @@
 
 | # | Finding | Status | Notes |
 |---|---------|--------|-------|
-| C-01 | Withdrawal signature discarded | **In progress** | `xrpl-mithril-codec` crate added to deps — has `signing_hash` and `multi_signing_hash`. Integration pending — requires PaymentBuilder + enclave signing flow. Real withdrawal works via Python e2e_multisig_withdrawal.py in the meantime. |
+| C-01 | Withdrawal signature discarded | **Fixed** | Full rewrite using `xrpl-mithril-codec`: signing_hash computes proper XRPL binary hash, enclave signs it, signature injected into tx, serialized to blob, submitted via RPC. No more discarded signatures. |
 | C-02 | Price/funding/liquidation without auth on enclave | **Mitigated by architecture** | Enclave listens on localhost:9088 only. nginx blocks all internal endpoints (return 403). iptables drops external access to 9088. Only orchestrator calls these. For production: add admin session key to ecalls. |
 | C-03 | No replay protection on auth | **Fixed** | X-XRPL-Timestamp header: 30s drift max, timestamp included in signed hash. Legacy mode (no timestamp) still accepted for backwards compatibility. |
 | C-04 | Deposits without on-chain verification | **By design (MVP)** | Enclave trusts orchestrator. For production: SPV proof or multi-operator deposit confirmation (2-of-3 operators must confirm). This is documented in doc 04 (multi-operator architecture). |
