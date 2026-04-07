@@ -442,17 +442,23 @@ async fn main() -> Result<()> {
             match price_feed::fetch_xrp_price(&http_client).await {
                 Ok(price) => {
                     current_price = price;
-                    let fp8 = float_to_fp8_string(price);
-                    if let Err(e) = perp.update_price(&fp8, &fp8, now_ts).await {
+                    let index_fp8 = float_to_fp8_string(price);
+                    // Mark price = orderbook mid if available, else index
+                    let mark = match app_state.engine.ticker().await {
+                        (_, _, Some(mid)) => mid.to_f64(),
+                        _ => price,
+                    };
+                    let mark_fp8 = float_to_fp8_string(mark);
+                    if let Err(e) = perp.update_price(&mark_fp8, &index_fp8, now_ts).await {
                         error!("price update failed: {}", e);
                     }
                     app_state.mark_price.store(
-                        crate::types::FP8::from_f64(price).raw(),
+                        crate::types::FP8::from_f64(mark).raw(),
                         Ordering::Relaxed,
                     );
                     let _ = app_state.ws_tx.send(WsEvent::Ticker {
-                        mark_price: fp8.clone(),
-                        index_price: fp8,
+                        mark_price: mark_fp8,
+                        index_price: index_fp8,
                         timestamp: now_ts,
                     });
                 }

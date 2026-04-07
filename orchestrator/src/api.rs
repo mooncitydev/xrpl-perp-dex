@@ -643,12 +643,17 @@ async fn withdraw(
     }
 
     let escrow_account_id = &state.escrow_address;
-    // Load session key from escrow config (same file orchestrator reads on startup)
-    let session_key = std::fs::read_to_string("/tmp/perp-9088/escrow_account.json")
+    // Load session key from escrow config — reject withdrawal if not found
+    let session_key = match std::fs::read_to_string("/tmp/perp-9088/escrow_account.json")
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|v| v["session_key"].as_str().map(|s| s.trim_start_matches("0x").to_string()))
-        .unwrap_or_else(|| "00".repeat(32));
+    {
+        Some(key) if key.len() == 64 => key,
+        _ => {
+            return err(StatusCode::SERVICE_UNAVAILABLE, "escrow signing key not configured").into_response();
+        }
+    };
 
     match crate::withdrawal::process_withdrawal(
         &state.perp,
