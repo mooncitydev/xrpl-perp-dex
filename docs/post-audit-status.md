@@ -10,7 +10,7 @@
 | # | Finding | Status | Notes |
 |---|---------|--------|-------|
 | C-01 | Withdrawal signature discarded | **Fixed** | Full rewrite using `xrpl-mithril-codec`: signing_hash computes proper XRPL binary hash, enclave signs it, signature injected into tx, serialized to blob, submitted via RPC. No more discarded signatures. |
-| C-02 | Price/funding/liquidation without auth on enclave | **Mitigated by architecture** | Enclave listens on localhost:9088 only. nginx blocks all internal endpoints (return 403). iptables drops external access to 9088. Only orchestrator calls these. For production: add admin session key to ecalls. |
+| C-02 | Price/funding/liquidation without auth on enclave | **By design** | Enclave on localhost:9088, iptables + nginx block external access. Adding admin session key per ecall would require storing it on disk (escrow_account.json) — attacker with shell access reads it anyway. Protecting a file (rare threat: server compromise) at the cost of breaking normal restarts (daily routine) is security theater. Real fix: multi-operator architecture — attacker must compromise 2 of 3 independent servers. |
 | C-03 | No replay protection on auth | **Fixed** | X-XRPL-Timestamp header: 30s drift max, timestamp included in signed hash. Legacy mode (no timestamp) still accepted for backwards compatibility. |
 | C-04 | Deposits without on-chain verification | **By design (MVP)** | Enclave trusts orchestrator. For production: SPV proof or multi-operator deposit confirmation (2-of-3 operators must confirm). This is documented in doc 04 (multi-operator architecture). |
 
