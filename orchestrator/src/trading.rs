@@ -171,6 +171,15 @@ impl TradingEngine {
             };
 
             if taker_err.is_some() || maker_err.is_some() {
+                // WARNING: orderbook has consumed maker liquidity but enclave rejected position.
+                // This is a known limitation — proper fix requires tentative matching with rollback.
+                // For now, log the failure prominently so it can be investigated.
+                error!(
+                    trade_id = trade.trade_id,
+                    price = %trade.price,
+                    size = %trade.size,
+                    "FILL REJECTED BY ENCLAVE — orderbook state inconsistent"
+                );
                 failed_fills.push(FailedFill {
                     trade: trade.clone(),
                     maker_error: maker_err,

@@ -128,10 +128,21 @@ impl XrplMonitor {
                 None => continue,
             };
 
-            let value_f64: f64 = match value.parse() {
-                Ok(v) if v > 0.0 => v,
-                _ => continue,
+            // Parse amount directly as string to avoid f64 precision loss
+            // XRPL amounts are already decimal strings like "100.50"
+            let fp8_amount = {
+                let parts: Vec<&str> = value.split('.').collect();
+                let integer = parts[0];
+                let frac = if parts.len() > 1 { parts[1] } else { "" };
+                // Pad or truncate fraction to 8 digits
+                let frac_padded = format!("{:0<8}", &frac[..frac.len().min(8)]);
+                format!("{}.{}", integer, frac_padded)
             };
+
+            // Validate it's a positive amount
+            if value.starts_with('-') || value == "0" || value == "0.00000000" {
+                continue;
+            }
 
             let sender = match tx["Account"].as_str() {
                 Some(s) => s.to_string(),
@@ -142,9 +153,6 @@ impl XrplMonitor {
                 Some(h) => h.to_lowercase(),
                 None => continue,
             };
-
-            // Convert to FP8 string
-            let fp8_amount = format!("{:.8}", value_f64);
 
             info!(
                 sender = %sender,

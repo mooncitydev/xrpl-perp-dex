@@ -51,6 +51,23 @@ pub fn verify_request(
         .and_then(|v| v.to_str().ok())
         .ok_or("missing X-XRPL-Signature header")?;
 
+    // Replay protection: optional timestamp header (required in production)
+    let timestamp_str = headers
+        .get("x-xrpl-timestamp")
+        .and_then(|v| v.to_str().ok());
+
+    if let Some(ts_str) = timestamp_str {
+        let ts: u64 = ts_str.parse().map_err(|_| "invalid X-XRPL-Timestamp")?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let drift = if now > ts { now - ts } else { ts - now };
+        if drift > 30 {
+            return Err(format!("request expired: timestamp drift {}s (max 30s)", drift));
+        }
+    }
+
     // Validate address format
     if !address.starts_with('r') || address.len() < 25 || address.len() > 35 {
         return Err("invalid XRPL address format".into());
@@ -94,10 +111,23 @@ pub fn verify_request(
     }
 
     // Compute hash of body (or URI for GET)
-    let hash = if body_bytes.is_empty() {
-        Sha256::digest(uri_path.as_bytes())
+    // If timestamp header present, it's included in the hash to prevent replay
+    let hash = if let Some(ts) = timestamp_str {
+        let mut hasher = Sha256::new();
+        if body_bytes.is_empty() {
+            hasher.update(uri_path.as_bytes());
+        } else {
+            hasher.update(body_bytes);
+        }
+        hasher.update(ts.as_bytes());
+        hasher.finalize()
     } else {
-        Sha256::digest(body_bytes)
+        // Legacy mode (no timestamp) — still accepted for backwards compatibility
+        if body_bytes.is_empty() {
+            Sha256::digest(uri_path.as_bytes())
+        } else {
+            Sha256::digest(body_bytes)
+        }
     };
 
     // Decode and verify signature

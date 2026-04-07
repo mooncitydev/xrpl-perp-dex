@@ -215,6 +215,15 @@ impl OrderBook {
             client_order_id,
         };
 
+        // FOK pre-check: verify sufficient liquidity before matching
+        if time_in_force == TimeInForce::Fok {
+            let available = self.available_liquidity(&order);
+            if available < size.0 {
+                order.status = OrderStatus::Cancelled;
+                return Ok((order, Vec::new()));
+            }
+        }
+
         // Match against resting orders
         let trades = self.match_order(&mut order);
 
@@ -240,8 +249,7 @@ impl OrderBook {
                     }
                 }
                 TimeInForce::Fok => {
-                    // FOK: should have been fully filled or not at all
-                    // (handled in match_order)
+                    // Already pre-checked — if we get here, it was fully filled
                 }
                 TimeInForce::Gtc => {
                     // GTC: rest unfilled on the book
@@ -365,6 +373,28 @@ impl OrderBook {
     }
 
     // ── Internal ────────────────────────────────────────────────
+
+    /// Check available liquidity for an order (for FOK pre-check).
+    fn available_liquidity(&self, order: &Order) -> i64 {
+        let opposite_book = match order.side {
+            Side::Long => &self.asks,
+            Side::Short => &self.bids,
+        };
+        let mut total = 0i64;
+        for (&price_key, level) in opposite_book.iter() {
+            let matches = match order.side {
+                Side::Long => order.order_type == OrderType::Market || price_key <= order.price.0,
+                Side::Short => order.order_type == OrderType::Market || price_key >= order.price.0,
+            };
+            if !matches { break; }
+            for o in &level.orders {
+                if o.user_id != order.user_id {
+                    total += o.remaining().0;
+                }
+            }
+        }
+        total
+    }
 
     fn add_to_book(&mut self, order: Order) {
         let book = match order.side {

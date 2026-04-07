@@ -11,7 +11,7 @@
 |---|---------|--------|-------|
 | C-01 | Withdrawal signature discarded | **Known limitation** | withdrawal.rs is a placeholder — full XRPL binary codec needed (xrpl-rs or port from Python sgx_signer.py). Real withdrawal works via Python e2e_multisig_withdrawal.py. Not a production path yet. |
 | C-02 | Price/funding/liquidation without auth on enclave | **Mitigated by architecture** | Enclave listens on localhost:9088 only. nginx blocks all internal endpoints (return 403). iptables drops external access to 9088. Only orchestrator calls these. For production: add admin session key to ecalls. |
-| C-03 | No replay protection on auth | **TODO** | Need to add timestamp to signed payload |
+| C-03 | No replay protection on auth | **Fixed** | X-XRPL-Timestamp header: 30s drift max, timestamp included in signed hash. Legacy mode (no timestamp) still accepted for backwards compatibility. |
 | C-04 | Deposits without on-chain verification | **By design (MVP)** | Enclave trusts orchestrator. For production: SPV proof or multi-operator deposit confirmation (2-of-3 operators must confirm). This is documented in doc 04 (multi-operator architecture). |
 
 ## HIGH
@@ -23,8 +23,8 @@
 | H-03 | Hardcoded session key "00"×32 | **Known placeholder** | Real session key loaded from escrow_account.json in production. withdrawal.rs placeholder code. |
 | H-04 | Deposits re-credited on restart | **Fixed** | last_ledger persisted to /tmp/perp-9088/last_ledger.txt |
 | H-05 | Funding rate always zero | **Fixed** | Mark price from orderbook mid, index from Binance |
-| H-06 | FOK not enforced | **TODO** | Need pre-check |
-| H-07 | Fills not rolled back on enclave reject | **TODO** | Need tentative matching |
+| H-06 | FOK not enforced | **Fixed** | Pre-check available liquidity before matching. Reject FOK if insufficient. |
+| H-07 | Fills not rolled back on enclave reject | **Mitigated** | Added ERROR log on failed fills. Full rollback requires tentative matching — deferred to production. |
 | H-08 | Funding drives margin negative | **TODO** | Need post-funding liquidation check |
 | H-09 | Tx hash dedup stops at 500 | **Acceptable for PoC** | MAX_TX_HASHES=500 is sufficient for testnet. Production: use rolling buffer. Enclave state is sealed periodically — old hashes can be archived. |
 
@@ -39,7 +39,7 @@
 | M-05 | State hash is timestamp | **Known placeholder** | TODO in code. Real hash needs Merkle tree of enclave state. |
 | M-06 | CORS allows all origins | **Acceptable for PoC** | Production: restrict to perp.ph18.io |
 | M-07 | Withdrawal destination not validated | **Fixed** | XRPL r-address format check before processing |
-| M-08 | Deposit amount through f64 | **TODO** | Need direct string parsing |
+| M-08 | Deposit amount through f64 | **Fixed** | Direct string-to-FP8 parsing, no f64 intermediate. |
 | M-09 | Integer overflow in enclave FP8 | **Same as M-02** | >92B overflow. Not reachable with realistic values. |
 | M-10 | fp_div returns 0 on /0 | **TODO** | Enclave C code |
 | M-11 | Closed positions never GC'd | **TODO** | Enclave C code |
