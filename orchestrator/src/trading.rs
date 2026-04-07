@@ -237,8 +237,9 @@ impl TradingEngine {
                     .unwrap_or_default()
                     .as_secs();
 
+                let batch_seq = self.seq_num.fetch_add(1, Ordering::SeqCst);
                 let batch = OrderBatch {
-                    seq_num: self.seq_num.fetch_add(1, Ordering::SeqCst),
+                    seq_num: batch_seq,
                     orders: vec![OrderMessage {
                         order_id: order.id,
                         user_id: order.user_id.clone(),
@@ -261,7 +262,19 @@ impl TradingEngine {
                             })
                             .collect(),
                     }],
-                    state_hash: format!("{:016x}", now), // TODO: real state hash
+                    state_hash: {
+                        // State hash = SHA-256 of (seq_num || trades || timestamp)
+                        use sha2::{Digest, Sha256};
+                        let mut hasher = Sha256::new();
+                        hasher.update(batch_seq.to_le_bytes());
+                        for t in &trades {
+                            hasher.update(t.trade_id.to_le_bytes());
+                            hasher.update(t.price.raw().to_le_bytes());
+                            hasher.update(t.size.raw().to_le_bytes());
+                        }
+                        hasher.update(now.to_le_bytes());
+                        hex::encode(hasher.finalize())
+                    },
                     timestamp: now,
                     sequencer_id: self.peer_id.clone(),
                 };
