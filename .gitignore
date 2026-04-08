@@ -26,3 +26,7 @@ venv/
 *.pem
 *.key
 .env
+
+# Multisig test secrets (testnet only but still secrets)
+tests/multisig_accounts.json
+tests/multisig_escrow.json
