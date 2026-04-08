@@ -32,7 +32,8 @@ from xrpl.clients import JsonRpcClient
 from xrpl.core.binarycodec import encode, encode_for_multisigning
 from xrpl.core.keypairs.helpers import sha512_first_half  # SHA-512 first half, 32 bytes
 from xrpl.models.requests import AccountInfo, Tx
-from xrpl.models.transactions import Payment, Transaction
+from xrpl.models.transactions import Payment, SignerListSet, Transaction
+from xrpl.models.transactions.signer_list_set import SignerEntry
 from xrpl.models.transactions.transaction import Signer
 from xrpl.transaction import autofill, multisign
 from xrpl.wallet import Wallet, generate_faucet_wallet
@@ -100,6 +101,27 @@ def build_payment(escrow_addr: str, destination: str, amount_drops: str, sequenc
         amount=amount_drops,
         sequence=sequence,
         fee="100",  # 100 drops, enough for 2-3 signers on testnet
+        signing_pub_key="",
+    )
+
+
+def build_signer_list_set(
+    escrow_addr: str,
+    new_signers: List[Dict],
+    quorum: int,
+    sequence: int,
+) -> SignerListSet:
+    """Build an unsigned SignerListSet tx for multisigning.
+
+    new_signers: list of dicts with at least {xrpl_address}.
+    """
+    entries = [SignerEntry(account=s["xrpl_address"], signer_weight=1) for s in new_signers]
+    return SignerListSet(
+        account=escrow_addr,
+        signer_quorum=quorum,
+        signer_entries=entries,
+        sequence=sequence,
+        fee="200",  # higher fee for multisigned admin tx
         signing_pub_key="",
     )
 
@@ -201,7 +223,7 @@ def cmd_send(args):
     result = submit_multisigned(client, tx, sigs)
     code = result.get("engine_result", "?")
     msg = result.get("engine_result_message", "")
-    tx_hash = result.get("tx_json", {}).get("hash") or result.get("tx_blob", "")[:16]
+    tx_hash = result.get("hash") or result.get("tx_json", {}).get("hash") or result.get("tx_blob", "")[:16]
     print(f"  engine_result: {code}")
     print(f"  message:       {msg}")
     if "tx_json" in result and "hash" in result["tx_json"]:

@@ -65,11 +65,13 @@ def enclave_alive(signer) -> bool:
         return False
 
 
-# Map signer name → (azure public ip, hetzner ssh hop). Hardcoded for the
-# testing environment; the scenarios runner uses these to physically stop/start
-# perp-dex-server processes on the Azure nodes.
+# Map signer name → azure public ip. Hardcoded for the testing environment;
+# the scenarios runner uses these to physically stop/start perp-dex-server
+# processes on the Azure nodes. sgx-node-1b is a second logical signer
+# generated on sgx-node-1 (added by scenario 3.8 to test scaling).
 NODE_IPS = {
     "sgx-node-1": "20.71.184.176",
+    "sgx-node-1b": "20.71.184.176",  # 2nd account on same enclave
     "sgx-node-2": "20.224.243.60",
     "sgx-node-3": "52.236.130.102",
 }
@@ -96,7 +98,7 @@ def _azure_ssh(ip: str, cmd: str, timeout: int = 30):
 
 def stop_enclave(name: str):
     ip = NODE_IPS[name]
-    _azure_ssh(ip, "pkill -f perp-dex-server; sleep 1; pgrep -f perp-dex-server || true")
+    _azure_ssh(ip, "pkill -x perp-dex-server; sleep 1; pgrep -f perp-dex-server || true")
     for _ in range(20):
         if not enclave_alive(next(s for s in load_cfg()["signers"] if s["name"] == name)):
             return
@@ -113,15 +115,31 @@ def start_enclave(name: str):
 
 
 def ensure_state(alive_names: List[str]):
-    """Make exactly the named enclaves alive; stop the others."""
+    """Make exactly the named enclaves alive; stop the others.
+
+    Operates on the 3 physical Azure nodes, deduplicating by node IP. Logical
+    signers like 'sgx-node-1b' that share a physical host with another signer
+    follow the host's state.
+    """
     cfg = load_cfg()
+    seen_ips = set()
     for s in cfg["signers"]:
-        if s["name"] in alive_names:
-            if not enclave_alive(s):
-                start_enclave(s["name"])
-        else:
-            if enclave_alive(s):
-                stop_enclave(s["name"])
+        if s["name"] not in NODE_IPS:
+            continue
+        ip = NODE_IPS[s["name"]]
+        if ip in seen_ips:
+            continue
+        seen_ips.add(ip)
+        # Determine desired state by whether ANY logical signer on this host
+        # is in alive_names.
+        wants_alive = any(
+            NODE_IPS.get(n) == ip for n in alive_names
+        )
+        is_alive = enclave_alive(s)
+        if wants_alive and not is_alive:
+            start_enclave(s["name"])
+        elif not wants_alive and is_alive:
+            stop_enclave(s["name"])
 
 
 def try_multisig_send(cfg, signer_names: List[str], dest: str, amount_xrp: float) -> Dict:
@@ -153,7 +171,7 @@ def try_multisig_send(cfg, signer_names: List[str], dest: str, amount_xrp: float
         return {"status": "error", "error": f"submit failed: {e}", "signers": signer_names}
 
     code = result.get("engine_result", "?")
-    tx_hash = result.get("tx_json", {}).get("hash")
+    tx_hash = result.get("hash") or result.get("tx_json", {}).get("hash")
     return {
         "status": "success" if code == "tesSUCCESS" else "rejected",
         "engine_result": code,
@@ -391,12 +409,13 @@ def scenario_3_4(cfg) -> Dict:
 
 
 def scenario_3_9(cfg) -> Dict:
-    """3.9: Catastrophic recovery. Verify XRPL has full deposit/withdrawal history."""
+    """3.9: Catastrophic recovery. Verify XRPL has full deposit/withdrawal history.
+
+    Read-only scenario; does not modify enclave or escrow state.
+    """
     name = "3.9 Catastrophic recovery (XRPL as source of truth)"
     events = []
     client = JsonRpcClient(XRPL_TESTNET)
-
-    ensure_state(["sgx-node-1", "sgx-node-2", "sgx-node-3"])
     cfg = load_cfg()
 
     escrow_addr = cfg["escrow_address"]
@@ -444,11 +463,384 @@ def scenario_3_9(cfg) -> Dict:
     }
 
 
+# ── Helpers for SignerListSet rotation scenarios ──────────────────────────
+
+
+def generate_new_account_on(name: str) -> Dict:
+    """Generate a fresh ECDSA account on the given enclave and return its
+    xrpl_address + compressed pubkey + session key in coordinator format.
+    """
+    cfg = load_cfg()
+    signer = next(s for s in cfg["signers"] if s["name"] == name)
+    r = requests.post(f"{signer['enclave_url']}/pool/generate", json={}, timeout=30, verify=False)
+    body = r.json()
+    if body.get("status") != "success":
+        raise RuntimeError(f"generate failed: {body}")
+
+    eth_addr = body["address"]
+    pubkey_uncompressed = body["public_key"]
+    session_key = body["session_key"]
+
+    # Convert uncompressed -> compressed
+    h = pubkey_uncompressed[2:] if pubkey_uncompressed.startswith("0x") else pubkey_uncompressed
+    assert h[:2] == "04"
+    x, y = h[2:66], h[66:]
+    prefix = "02" if int(y, 16) % 2 == 0 else "03"
+    compressed = (prefix + x).upper()
+
+    from xrpl.core.keypairs import derive_classic_address
+    xrpl_addr = derive_classic_address(compressed)
+
+    return {
+        "name": name,
+        "ip": signer["ip"],
+        "enclave_url": signer["enclave_url"],
+        "address": eth_addr,
+        "session_key": session_key,
+        "compressed_pubkey": compressed,
+        "xrpl_address": xrpl_addr,
+    }
+
+
+def submit_signer_list_set(cfg, new_signers: List[Dict], quorum: int, signing_node_names: List[str]) -> Dict:
+    """Build, multisign, and submit a SignerListSet update."""
+    client = JsonRpcClient(XRPL_TESTNET)
+    escrow_addr = cfg["escrow_address"]
+    info = client.request(AccountInfo(account=escrow_addr, ledger_index="current"))
+    sequence = info.result["account_data"]["Sequence"]
+
+    tx = mc.build_signer_list_set(escrow_addr, new_signers, quorum, sequence)
+    signers_map = {s["name"]: s for s in cfg["signers"]}
+
+    sigs = []
+    for name in signing_node_names:
+        sig = mc.sign_by_enclave(tx, signers_map[name])
+        sigs.append(sig)
+
+    return mc.submit_multisigned(client, tx, sigs)
+
+
+def fetch_onchain_signer_list(cfg) -> Dict:
+    """Read SignerListSet for escrow from XRPL and return {quorum, signers}."""
+    from xrpl.models.requests import AccountObjects
+    client = JsonRpcClient(XRPL_TESTNET)
+    objs = client.request(
+        AccountObjects(account=cfg["escrow_address"], type="signer_list")
+    )
+    sl_objs = objs.result.get("account_objects", [])
+    if not sl_objs:
+        return {}
+    sl = sl_objs[0]
+    return {
+        "quorum": sl["SignerQuorum"],
+        "signers": sorted([e["SignerEntry"]["Account"] for e in sl["SignerEntries"]]),
+    }
+
+
+def update_escrow_file_signers(new_signers: List[Dict], new_quorum: int):
+    """Persist new signers list back to multisig_escrow.json."""
+    cfg = load_cfg()
+    cfg["signers"] = new_signers
+    cfg["quorum"] = new_quorum
+    with open(ESCROW_FILE, "w") as f:
+        json.dump(cfg, f, indent=2)
+
+
+# ── Scenarios 3.5-3.8 ─────────────────────────────────────────────────────
+
+
+def scenario_3_5(cfg) -> Dict:
+    """3.5: SGX compromise. Rotate one signer's key via current 2-of-3 multisig."""
+    name = "3.5 SGX compromise → key rotation"
+    events = []
+    tx_hashes = []
+
+    ensure_state(["sgx-node-1", "sgx-node-2", "sgx-node-3"])
+    cfg = load_cfg()
+    signers_old = list(cfg["signers"])
+    target_name = "sgx-node-3"
+
+    # Snapshot original signer
+    target_old = next(s for s in signers_old if s["name"] == target_name)
+    events.append({"step": "snapshot_target", "old_xrpl_address": target_old["xrpl_address"]})
+
+    try:
+        # Step 1: generate new key on target node
+        new_target = generate_new_account_on(target_name)
+        events.append({"step": "generate_new_key", "new_xrpl_address": new_target["xrpl_address"]})
+
+        # Step 2: build new signer list with target replaced
+        new_signers = [s if s["name"] != target_name else new_target for s in signers_old]
+        events.append({"step": "new_signer_set", "addresses": [s["xrpl_address"] for s in new_signers]})
+
+        # Step 3: submit SignerListSet via current 2-of-3 multisig (using OLD keys)
+        result = submit_signer_list_set(cfg, new_signers, cfg["quorum"], ["sgx-node-1", "sgx-node-2"])
+        code = result.get("engine_result", "?")
+        h = result.get("hash") or result.get("tx_json", {}).get("hash")
+        events.append({"step": "submit_signer_list_set", "engine_result": code, "tx_hash": h})
+        if h:
+            tx_hashes.append({"step": "rotation_tx", "hash": h})
+        if code != "tesSUCCESS":
+            return {"name": name, "status": "fail", "details": f"SignerListSet failed: {code}", "events": events, "tx_hashes": tx_hashes}
+
+        # Step 4: persist new signers locally so we can sign with the rotated key
+        update_escrow_file_signers(new_signers, cfg["quorum"])
+        time.sleep(2)
+
+        # Step 5: verify on-chain SignerList contains new address
+        on_chain = fetch_onchain_signer_list(load_cfg())
+        events.append({"step": "verify_onchain", "signer_list": on_chain})
+        if new_target["xrpl_address"] not in on_chain.get("signers", []):
+            return {"name": name, "status": "fail", "details": "new key not in on-chain SignerList", "events": events, "tx_hashes": tx_hashes}
+        if target_old["xrpl_address"] in on_chain.get("signers", []):
+            return {"name": name, "status": "fail", "details": "old key still in SignerList", "events": events, "tx_hashes": tx_hashes}
+
+        # Step 6: withdraw using NEW key + one of the original keys → expect success
+        client = JsonRpcClient(XRPL_TESTNET)
+        dest = create_dest(client)
+        events.append({"step": "create_dest", "address": dest})
+        post_rotation = try_multisig_send(load_cfg(), ["sgx-node-1", target_name], dest, 1.0)
+        events.append({"step": "withdraw_with_new_key", "result": post_rotation})
+        if post_rotation.get("tx_hash"):
+            tx_hashes.append({"step": "post_rotation_withdraw", "hash": post_rotation["tx_hash"]})
+        if post_rotation["status"] != "success":
+            return {"name": name, "status": "fail", "details": "withdrawal with new key failed", "events": events, "tx_hashes": tx_hashes}
+
+        return {
+            "name": name,
+            "status": "pass",
+            "details": (
+                f"rotated {target_name} from {target_old['xrpl_address']} to "
+                f"{new_target['xrpl_address']} via 2-of-3 multisig; "
+                f"withdrawal with new key succeeded"
+            ),
+            "events": events,
+            "tx_hashes": tx_hashes,
+        }
+    except Exception as e:
+        events.append({"step": "exception", "error": str(e)})
+        return {"name": name, "status": "fail", "details": f"exception: {e}", "events": events, "tx_hashes": tx_hashes}
+
+
+def scenario_3_6(cfg) -> Dict:
+    """3.6: Hardware failure. Lose sealed data on one node, replace with new key.
+
+    Same flow as 3.5 but explicitly clears /home/azureuser/perp/accounts on
+    the target node first to simulate complete data loss.
+    """
+    name = "3.6 Hardware failure → replacement node"
+    events = []
+    tx_hashes = []
+    ensure_state(["sgx-node-1", "sgx-node-2", "sgx-node-3"])
+    cfg = load_cfg()
+    target_name = "sgx-node-2"
+    target_ip = NODE_IPS[target_name]
+    target_old = next(s for s in cfg["signers"] if s["name"] == target_name)
+
+    try:
+        # Wipe sealed accounts on target → simulate hardware loss
+        _azure_ssh(target_ip, "pkill -x perp-dex-server; sleep 1; rm -rf /home/azureuser/perp/accounts/*; bash /tmp/start2.sh")
+        events.append({"step": "wipe_and_restart_target"})
+        time.sleep(3)
+
+        # Generate fresh key on the (now-empty) node
+        new_target = generate_new_account_on(target_name)
+        events.append({"step": "generate_replacement_key", "new_xrpl_address": new_target["xrpl_address"]})
+
+        new_signers = [s if s["name"] != target_name else new_target for s in cfg["signers"]]
+        # Rotate via the surviving 2 keys (sgx-node-1 + sgx-node-3)
+        result = submit_signer_list_set(cfg, new_signers, cfg["quorum"], ["sgx-node-1", "sgx-node-3"])
+        code = result.get("engine_result", "?")
+        h = result.get("hash") or result.get("tx_json", {}).get("hash")
+        events.append({"step": "submit_signer_list_set", "engine_result": code, "tx_hash": h})
+        if h:
+            tx_hashes.append({"step": "replacement_tx", "hash": h})
+        if code != "tesSUCCESS":
+            return {"name": name, "status": "fail", "details": f"SignerListSet failed: {code}", "events": events, "tx_hashes": tx_hashes}
+
+        update_escrow_file_signers(new_signers, cfg["quorum"])
+        time.sleep(2)
+
+        # Verify withdrawal with replacement key works
+        client = JsonRpcClient(XRPL_TESTNET)
+        dest = create_dest(client)
+        events.append({"step": "create_dest", "address": dest})
+        wd = try_multisig_send(load_cfg(), ["sgx-node-1", target_name], dest, 1.0)
+        events.append({"step": "withdraw_with_replacement", "result": wd})
+        if wd.get("tx_hash"):
+            tx_hashes.append({"step": "post_replacement_withdraw", "hash": wd["tx_hash"]})
+
+        if wd["status"] != "success":
+            return {"name": name, "status": "fail", "details": "withdraw with replacement failed", "events": events, "tx_hashes": tx_hashes}
+
+        return {
+            "name": name,
+            "status": "pass",
+            "details": (
+                f"wiped accounts on {target_name}, generated replacement key "
+                f"{new_target['xrpl_address']}, surviving 2 of 3 rotated SignerList, "
+                f"withdrawal with replacement succeeded"
+            ),
+            "events": events,
+            "tx_hashes": tx_hashes,
+        }
+    except Exception as e:
+        events.append({"step": "exception", "error": str(e)})
+        return {"name": name, "status": "fail", "details": f"exception: {e}", "events": events, "tx_hashes": tx_hashes}
+
+
+def scenario_3_7(cfg) -> Dict:
+    """3.7: Cloud migration. Same as 3.5 but framed as moving an operator to a new
+    physical host (we simulate by generating a fresh key on the same node).
+    """
+    name = "3.7 Cloud migration"
+    events = []
+    tx_hashes = []
+    ensure_state(["sgx-node-1", "sgx-node-2", "sgx-node-3"])
+    cfg = load_cfg()
+    target_name = "sgx-node-1"
+    target_old = next(s for s in cfg["signers"] if s["name"] == target_name)
+
+    try:
+        new_target = generate_new_account_on(target_name)
+        events.append({
+            "step": "generate_post_migration_key",
+            "old_xrpl_address": target_old["xrpl_address"],
+            "new_xrpl_address": new_target["xrpl_address"],
+        })
+
+        new_signers = [s if s["name"] != target_name else new_target for s in cfg["signers"]]
+        result = submit_signer_list_set(cfg, new_signers, cfg["quorum"], ["sgx-node-2", "sgx-node-3"])
+        code = result.get("engine_result", "?")
+        h = result.get("hash") or result.get("tx_json", {}).get("hash")
+        events.append({"step": "submit_signer_list_set", "engine_result": code, "tx_hash": h})
+        if h:
+            tx_hashes.append({"step": "migration_tx", "hash": h})
+        if code != "tesSUCCESS":
+            return {"name": name, "status": "fail", "details": f"SignerListSet failed: {code}", "events": events, "tx_hashes": tx_hashes}
+
+        update_escrow_file_signers(new_signers, cfg["quorum"])
+        time.sleep(2)
+
+        client = JsonRpcClient(XRPL_TESTNET)
+        dest = create_dest(client)
+        wd = try_multisig_send(load_cfg(), [target_name, "sgx-node-2"], dest, 1.0)
+        events.append({"step": "withdraw_post_migration", "result": wd})
+        if wd.get("tx_hash"):
+            tx_hashes.append({"step": "post_migration_withdraw", "hash": wd["tx_hash"]})
+        if wd["status"] != "success":
+            return {"name": name, "status": "fail", "details": "post-migration withdrawal failed", "events": events, "tx_hashes": tx_hashes}
+
+        return {
+            "name": name,
+            "status": "pass",
+            "details": f"migrated {target_name} key to {new_target['xrpl_address']}, withdrawal works",
+            "events": events,
+            "tx_hashes": tx_hashes,
+        }
+    except Exception as e:
+        events.append({"step": "exception", "error": str(e)})
+        return {"name": name, "status": "fail", "details": f"exception: {e}", "events": events, "tx_hashes": tx_hashes}
+
+
+def scenario_3_8(cfg) -> Dict:
+    """3.8: Scaling. Expand from 2-of-3 to 3-of-4 by adding a 4th signer.
+
+    The 4th signer is a second account on sgx-node-1 (different ECDSA key on
+    the same enclave hardware — fine for testing the SignerList expansion).
+    """
+    name = "3.8 Scaling 2-of-3 → 3-of-4"
+    events = []
+    tx_hashes = []
+    ensure_state(["sgx-node-1", "sgx-node-2", "sgx-node-3"])
+    cfg = load_cfg()
+
+    try:
+        # Generate 4th key on sgx-node-1 (second account on same enclave)
+        new_signer = generate_new_account_on("sgx-node-1")
+        new_signer["name"] = "sgx-node-1b"  # distinguish in cfg
+        events.append({"step": "generate_4th_signer", "new_xrpl_address": new_signer["xrpl_address"]})
+
+        new_signers = list(cfg["signers"]) + [new_signer]
+        new_quorum = 3
+
+        result = submit_signer_list_set(cfg, new_signers, new_quorum, ["sgx-node-1", "sgx-node-2"])
+        code = result.get("engine_result", "?")
+        h = result.get("hash") or result.get("tx_json", {}).get("hash")
+        events.append({"step": "submit_expand", "engine_result": code, "tx_hash": h})
+        if h:
+            tx_hashes.append({"step": "expand_tx", "hash": h})
+        if code != "tesSUCCESS":
+            return {"name": name, "status": "fail", "details": f"expansion failed: {code}", "events": events, "tx_hashes": tx_hashes}
+
+        update_escrow_file_signers(new_signers, new_quorum)
+        time.sleep(2)
+
+        on_chain = fetch_onchain_signer_list(load_cfg())
+        events.append({"step": "verify_onchain", "signer_list": on_chain})
+        if on_chain.get("quorum") != 3 or len(on_chain.get("signers", [])) != 4:
+            return {
+                "name": name,
+                "status": "fail",
+                "details": f"expected 3-of-4, got {on_chain}",
+                "events": events,
+                "tx_hashes": tx_hashes,
+            }
+
+        # Negative test: 2 signatures should now be insufficient
+        client = JsonRpcClient(XRPL_TESTNET)
+        dest = create_dest(client)
+        events.append({"step": "create_dest", "address": dest})
+
+        wd_two = try_multisig_send(load_cfg(), ["sgx-node-1", "sgx-node-2"], dest, 1.0)
+        events.append({"step": "withdraw_with_2_signers_should_fail", "result": wd_two})
+        if wd_two.get("engine_result") == "tesSUCCESS":
+            return {
+                "name": name,
+                "status": "fail",
+                "details": "2 signatures still sufficient after raising quorum to 3",
+                "events": events,
+                "tx_hashes": tx_hashes,
+            }
+
+        # Positive test: 3 signatures should work
+        wd_three = try_multisig_send(load_cfg(), ["sgx-node-1", "sgx-node-2", "sgx-node-3"], dest, 1.0)
+        events.append({"step": "withdraw_with_3_signers_should_succeed", "result": wd_three})
+        if wd_three.get("tx_hash"):
+            tx_hashes.append({"step": "post_expand_withdraw", "hash": wd_three["tx_hash"]})
+        if wd_three["status"] != "success":
+            return {
+                "name": name,
+                "status": "fail",
+                "details": "3-of-4 withdrawal failed",
+                "events": events,
+                "tx_hashes": tx_hashes,
+            }
+
+        return {
+            "name": name,
+            "status": "pass",
+            "details": (
+                f"expanded SignerList to 4 entries with quorum=3; "
+                f"2 sigs correctly rejected, 3 sigs accepted"
+            ),
+            "events": events,
+            "tx_hashes": tx_hashes,
+        }
+    except Exception as e:
+        events.append({"step": "exception", "error": str(e)})
+        return {"name": name, "status": "fail", "details": f"exception: {e}", "events": events, "tx_hashes": tx_hashes}
+
+
 SCENARIOS = {
     "3.1": scenario_3_1,
     "3.2": scenario_3_2,
     "3.3": scenario_3_3,
     "3.4": scenario_3_4,
+    "3.5": scenario_3_5,
+    "3.6": scenario_3_6,
+    "3.7": scenario_3_7,
+    "3.8": scenario_3_8,
     "3.9": scenario_3_9,
 }
 

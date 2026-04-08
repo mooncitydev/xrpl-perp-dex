@@ -1,0 +1,429 @@
+[
+  {
+    "name": "3.1 One operator offline",
+    "status": "pass",
+    "details": "2-of-3 worked with alive signers ['sgx-node-1', 'sgx-node-2']; sgx-node-3 offline correctly blocked second attempt",
+    "events": [
+      {
+        "step": "precondition_liveness",
+        "alive": {
+          "sgx-node-1": true,
+          "sgx-node-2": true,
+          "sgx-node-3": false
+        }
+      },
+      {
+        "step": "create_destination",
+        "address": "rpx2bKqNkAXSwY63uDse5qz1VYSF1o6CtK"
+      },
+      {
+        "step": "multisig_with_alive_signers=['sgx-node-1', 'sgx-node-2']",
+        "result": {
+          "status": "success",
+          "engine_result": "tesSUCCESS",
+          "engine_result_message": "The transaction was applied. Only final in a validated ledger.",
+          "tx_hash": "FC9C32DBCC422368888518FE143AA0715BA1D1FD6E26B5EC45DA52B471D8A1D0",
+          "signers": [
+            "sgx-node-1",
+            "sgx-node-2"
+          ]
+        }
+      },
+      {
+        "step": "multisig_with_offline=['sgx-node-1', 'sgx-node-3']",
+        "result": {
+          "status": "error",
+          "error": "sgx-node-3 sign failed: ('Connection aborted.', ConnectionResetError(104, 'Connection reset by peer'))",
+          "signers_attempted": [
+            "sgx-node-1",
+            "sgx-node-3"
+          ]
+        }
+      }
+    ],
+    "tx_hashes": [
+      {
+        "step": "alive_signers_success",
+        "hash": "FC9C32DBCC422368888518FE143AA0715BA1D1FD6E26B5EC45DA52B471D8A1D0"
+      }
+    ]
+  },
+  {
+    "name": "3.2 Two operators offline",
+    "status": "pass",
+    "details": "withdrawal correctly blocked with only ['sgx-node-1'] alive; escrow=94.99989 XRP still safe",
+    "events": [
+      {
+        "step": "precondition_liveness",
+        "alive": {
+          "sgx-node-1": true,
+          "sgx-node-2": false,
+          "sgx-node-3": false
+        }
+      },
+      {
+        "step": "create_destination",
+        "address": "rB4xKWDpSV17kE1fAhfbTsVXkmNm5HQBzm"
+      },
+      {
+        "step": "multisig_with_only_['sgx-node-1']",
+        "result": {
+          "status": "rejected",
+          "engine_result": "tefBAD_QUORUM",
+          "engine_result_message": "Signatures provided do not meet the quorum.",
+          "tx_hash": "2E0AB1A852BFB6ED36E87B9812882A81A07E743D58236141206EF5DFB2DB41C0",
+          "signers": [
+            "sgx-node-1"
+          ]
+        }
+      },
+      {
+        "step": "multisig_with_offline_mixed=['sgx-node-1', 'sgx-node-2']",
+        "result": {
+          "status": "error",
+          "error": "sgx-node-2 sign failed: ('Connection aborted.', ConnectionResetError(104, 'Connection reset by peer'))",
+          "signers_attempted": [
+            "sgx-node-1",
+            "sgx-node-2"
+          ]
+        }
+      },
+      {
+        "step": "funds_safe_check",
+        "escrow_balance_xrp": 94.99989
+      }
+    ]
+  },
+  {
+    "name": "3.3 All three operators offline",
+    "status": "pass",
+    "details": "withdrawal blocked while all offline; escrow=94.99989 XRP safe on XRPL",
+    "events": [
+      {
+        "step": "precondition_liveness",
+        "alive": {
+          "sgx-node-1": false,
+          "sgx-node-2": false,
+          "sgx-node-3": false
+        }
+      },
+      {
+        "step": "funds_safe_check",
+        "escrow_balance_xrp": 94.99989
+      },
+      {
+        "step": "create_destination",
+        "address": "rhvs9QWrhkBSi7sHjptsqzwK1HbyKgxWvi"
+      },
+      {
+        "step": "attempt_withdraw_all_offline",
+        "result": {
+          "status": "error",
+          "error": "sgx-node-1 sign failed: ('Connection aborted.', ConnectionResetError(104, 'Connection reset by peer'))",
+          "signers_attempted": [
+            "sgx-node-1",
+            "sgx-node-2"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "3.4 Malicious operator (wrong signature)",
+    "status": "pass",
+    "details": "garbage signature rejected (?); 2 honest signers successfully retried",
+    "events": [
+      {
+        "step": "precondition_liveness",
+        "alive": {
+          "sgx-node-1": true,
+          "sgx-node-2": true,
+          "sgx-node-3": true
+        }
+      },
+      {
+        "step": "create_destination",
+        "address": "rMZtPipYv5DzCMzE6yB5rFtuETKQ2vtBYA"
+      },
+      {
+        "step": "submit_with_garbage",
+        "engine_result": "?",
+        "message": ""
+      },
+      {
+        "step": "retry_with_honest=['sgx-node-1', 'sgx-node-2']",
+        "result": {
+          "status": "success",
+          "engine_result": "tesSUCCESS",
+          "engine_result_message": "The transaction was applied. Only final in a validated ledger.",
+          "tx_hash": "90819EC6CBA5ACC549DEF5496B665BBFA959C8FA7887C4500D779B2B917ED25F",
+          "signers": [
+            "sgx-node-1",
+            "sgx-node-2"
+          ]
+        }
+      }
+    ],
+    "tx_hashes": [
+      {
+        "step": "honest_retry_success",
+        "hash": "90819EC6CBA5ACC549DEF5496B665BBFA959C8FA7887C4500D779B2B917ED25F"
+      }
+    ]
+  },
+  {
+    "name": "3.5 SGX compromise \u2192 key rotation",
+    "status": "pass",
+    "details": "rotated sgx-node-3 from rngyJoTjcapTtadGbozKFaMmo6FLGXYQX5 to rDfPzHDVNsgWdKpuhtB8h6u2HfRbY82fsm via 2-of-3 multisig; withdrawal with new key succeeded",
+    "events": [
+      {
+        "step": "snapshot_target",
+        "old_xrpl_address": "rngyJoTjcapTtadGbozKFaMmo6FLGXYQX5"
+      },
+      {
+        "step": "generate_new_key",
+        "new_xrpl_address": "rDfPzHDVNsgWdKpuhtB8h6u2HfRbY82fsm"
+      },
+      {
+        "step": "new_signer_set",
+        "addresses": [
+          "raQCoQV7xDyBq2LzCw1Gn9azznzzNGg5ej",
+          "r3w6sMA8rhotXMHRmY73iS3Jyr2sJNLxn6",
+          "rDfPzHDVNsgWdKpuhtB8h6u2HfRbY82fsm"
+        ]
+      },
+      {
+        "step": "submit_signer_list_set",
+        "engine_result": "tesSUCCESS",
+        "tx_hash": "23E1C0EE68EB000A5C922E8D6D8A68AC042A024D1CF2FB8A437D65D47F11E809"
+      },
+      {
+        "step": "verify_onchain",
+        "signer_list": {
+          "quorum": 2,
+          "signers": [
+            "r3w6sMA8rhotXMHRmY73iS3Jyr2sJNLxn6",
+            "rDfPzHDVNsgWdKpuhtB8h6u2HfRbY82fsm",
+            "raQCoQV7xDyBq2LzCw1Gn9azznzzNGg5ej"
+          ]
+        }
+      },
+      {
+        "step": "create_dest",
+        "address": "rBUvhPwE4E3EshKwKT4RE3zi8iwriWxbnC"
+      },
+      {
+        "step": "withdraw_with_new_key",
+        "result": {
+          "status": "success",
+          "engine_result": "tesSUCCESS",
+          "engine_result_message": "The transaction was applied. Only final in a validated ledger.",
+          "tx_hash": "8274091DFB2A0FA83B33473E31A60E90E24C832DA9B12788259D4C5DD5887F14",
+          "signers": [
+            "sgx-node-1",
+            "sgx-node-3"
+          ]
+        }
+      }
+    ],
+    "tx_hashes": [
+      {
+        "step": "rotation_tx",
+        "hash": "23E1C0EE68EB000A5C922E8D6D8A68AC042A024D1CF2FB8A437D65D47F11E809"
+      },
+      {
+        "step": "post_rotation_withdraw",
+        "hash": "8274091DFB2A0FA83B33473E31A60E90E24C832DA9B12788259D4C5DD5887F14"
+      }
+    ]
+  },
+  {
+    "name": "3.6 Hardware failure \u2192 replacement node",
+    "status": "pass",
+    "details": "wiped accounts on sgx-node-2, generated replacement key rDtwxkiRyAVTHsNnGjtnXmGzH65w8fTp1p, surviving 2 of 3 rotated SignerList, withdrawal with replacement succeeded",
+    "events": [
+      {
+        "step": "wipe_and_restart_target"
+      },
+      {
+        "step": "generate_replacement_key",
+        "new_xrpl_address": "rDtwxkiRyAVTHsNnGjtnXmGzH65w8fTp1p"
+      },
+      {
+        "step": "submit_signer_list_set",
+        "engine_result": "tesSUCCESS",
+        "tx_hash": "B056CA00778054F041335F05054B106E6CBA22713A33611CCCFC924B19E1A686"
+      },
+      {
+        "step": "create_dest",
+        "address": "r9yhEpL2Jx7Far8mH1bVkLbPAVMe4gfDm8"
+      },
+      {
+        "step": "withdraw_with_replacement",
+        "result": {
+          "status": "success",
+          "engine_result": "tesSUCCESS",
+          "engine_result_message": "The transaction was applied. Only final in a validated ledger.",
+          "tx_hash": "F455EBCCBC7B858854E1A1DCCEC86430C53897319BFE6C1D11083B280C68F7BE",
+          "signers": [
+            "sgx-node-1",
+            "sgx-node-2"
+          ]
+        }
+      }
+    ],
+    "tx_hashes": [
+      {
+        "step": "replacement_tx",
+        "hash": "B056CA00778054F041335F05054B106E6CBA22713A33611CCCFC924B19E1A686"
+      },
+      {
+        "step": "post_replacement_withdraw",
+        "hash": "F455EBCCBC7B858854E1A1DCCEC86430C53897319BFE6C1D11083B280C68F7BE"
+      }
+    ]
+  },
+  {
+    "name": "3.7 Cloud migration",
+    "status": "pass",
+    "details": "migrated sgx-node-1 key to rEGTRV8gtRJjpr1NtRb1nVp3bXtVgTWTWe, withdrawal works",
+    "events": [
+      {
+        "step": "generate_post_migration_key",
+        "old_xrpl_address": "raQCoQV7xDyBq2LzCw1Gn9azznzzNGg5ej",
+        "new_xrpl_address": "rEGTRV8gtRJjpr1NtRb1nVp3bXtVgTWTWe"
+      },
+      {
+        "step": "submit_signer_list_set",
+        "engine_result": "tesSUCCESS",
+        "tx_hash": "8899292EE67D800A136741C9A3950054248658625156AD7C23E4CD24E7CA3E23"
+      },
+      {
+        "step": "withdraw_post_migration",
+        "result": {
+          "status": "success",
+          "engine_result": "tesSUCCESS",
+          "engine_result_message": "The transaction was applied. Only final in a validated ledger.",
+          "tx_hash": "8931EFAA52AED2351D7BAE0313B84B6157386CD7B73389C4190FF5E4B975CBBB",
+          "signers": [
+            "sgx-node-1",
+            "sgx-node-2"
+          ]
+        }
+      }
+    ],
+    "tx_hashes": [
+      {
+        "step": "migration_tx",
+        "hash": "8899292EE67D800A136741C9A3950054248658625156AD7C23E4CD24E7CA3E23"
+      },
+      {
+        "step": "post_migration_withdraw",
+        "hash": "8931EFAA52AED2351D7BAE0313B84B6157386CD7B73389C4190FF5E4B975CBBB"
+      }
+    ]
+  },
+  {
+    "name": "3.8 Scaling 2-of-3 \u2192 3-of-4",
+    "status": "pass",
+    "details": "expanded SignerList to 4 entries with quorum=3; 2 sigs correctly rejected, 3 sigs accepted",
+    "events": [
+      {
+        "step": "generate_4th_signer",
+        "new_xrpl_address": "rhHGQSKtKpuU6Nv9e2CXcoMbHZWL5itfbi"
+      },
+      {
+        "step": "submit_expand",
+        "engine_result": "tesSUCCESS",
+        "tx_hash": "B992884B8A19204014AD59D899B0C66D5F3AFF69625C7795E1A5D7E3D80DAA8B"
+      },
+      {
+        "step": "verify_onchain",
+        "signer_list": {
+          "quorum": 3,
+          "signers": [
+            "rDfPzHDVNsgWdKpuhtB8h6u2HfRbY82fsm",
+            "rDtwxkiRyAVTHsNnGjtnXmGzH65w8fTp1p",
+            "rEGTRV8gtRJjpr1NtRb1nVp3bXtVgTWTWe",
+            "rhHGQSKtKpuU6Nv9e2CXcoMbHZWL5itfbi"
+          ]
+        }
+      },
+      {
+        "step": "create_dest",
+        "address": "r4AdgT2MWQBvEU37kNtkVb7T4NK337LHfq"
+      },
+      {
+        "step": "withdraw_with_2_signers_should_fail",
+        "result": {
+          "status": "rejected",
+          "engine_result": "tefBAD_QUORUM",
+          "engine_result_message": "Signatures provided do not meet the quorum.",
+          "tx_hash": "FF3F8D12D605ADF06D739291D702D63B757FDC6F523DA07079D947F05D1C24C2",
+          "signers": [
+            "sgx-node-1",
+            "sgx-node-2"
+          ]
+        }
+      },
+      {
+        "step": "withdraw_with_3_signers_should_succeed",
+        "result": {
+          "status": "success",
+          "engine_result": "tesSUCCESS",
+          "engine_result_message": "The transaction was applied. Only final in a validated ledger.",
+          "tx_hash": "49629B8F72E8E1624B6C781DEBED3E5D734BA27530492A7A5B2D2C2AFCC7E38F",
+          "signers": [
+            "sgx-node-1",
+            "sgx-node-2",
+            "sgx-node-3"
+          ]
+        }
+      }
+    ],
+    "tx_hashes": [
+      {
+        "step": "expand_tx",
+        "hash": "B992884B8A19204014AD59D899B0C66D5F3AFF69625C7795E1A5D7E3D80DAA8B"
+      },
+      {
+        "step": "post_expand_withdraw",
+        "hash": "49629B8F72E8E1624B6C781DEBED3E5D734BA27530492A7A5B2D2C2AFCC7E38F"
+      }
+    ]
+  },
+  {
+    "name": "3.9 Catastrophic recovery (XRPL as source of truth)",
+    "status": "pass",
+    "details": "XRPL has 11 txs, {'SignerListSet': 5, 'Payment': 6} types, escrow balance 89.99859 XRP, quorum=3 with 4 signers. Full recovery possible from XRPL ledger alone.",
+    "events": [
+      {
+        "step": "fetch_account_history",
+        "tx_count": 11
+      },
+      {
+        "step": "fetch_balance",
+        "balance_xrp": 89.99859
+      },
+      {
+        "step": "fetch_signer_list",
+        "info": {
+          "quorum": 3,
+          "signers": [
+            "rhHGQSKtKpuU6Nv9e2CXcoMbHZWL5itfbi",
+            "rDfPzHDVNsgWdKpuhtB8h6u2HfRbY82fsm",
+            "rDtwxkiRyAVTHsNnGjtnXmGzH65w8fTp1p",
+            "rEGTRV8gtRJjpr1NtRb1nVp3bXtVgTWTWe"
+          ]
+        }
+      },
+      {
+        "step": "categorize_tx_types",
+        "types": {
+          "SignerListSet": 5,
+          "Payment": 6
+        }
+      }
+    ]
+  }
+]
