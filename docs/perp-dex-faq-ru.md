@@ -419,7 +419,7 @@ ssh azureuser@sgx-node-2 \
 A: AMM не поддерживает perp futures — нужен margin engine, liquidations, funding rate. Это требует Turing-complete computation, чего нет на XRPL. TEE заменяет smart contract.
 
 **Q: Что если SGX enclave hacked?**
-A: Атакующий с физическим доступом к CPU может попытаться side-channel attack. Это требует лабораторного оборудования, недели работы. Сравнить с Drift Protocol — драйн $280M через ОДНУ транзакцию через flash loan. SGX многократно сложнее.
+A: Атакующий с физическим доступом к CPU может попытаться side-channel attack. Это требует лабораторного оборудования, недели работы. Сравнить с Drift Protocol (Solana, апрель 2026) — драйн $280M НЕ через баг в коде, а через social engineering Security Council multisig (5 подписантов). Атакующий полгода втирался в доверие команды, использовал Solana durable nonces для отложенных транзакций, и в момент легитимного теста insurance fund активировал заранее подписанные admin-операции. В нашей архитектуре подписанты — это процессоры (SGX enclaves), их нельзя social-engineer'ить и нельзя "убедить" подписать невалидную транзакцию.
 
 **Q: Как пользователи доверяют что код тот который вы показываете?**
 A: DCAP attestation. Любой может запросить quote с challenge nonce, получить Intel-signed proof что enclave с конкретным MRENCLAVE запущен. Сравнивая MRENCLAVE с хешем нашего открытого кода → доказательство.
@@ -431,7 +431,7 @@ A: Это нативный stablecoin XRPL (от Ripple). Регулируемы
 A: Архитектура спроектирована (sequencer election, libp2p gossipsub, XRPL multisig). Сейчас один оператор для PoC. Запуск 3 операторов после хакатона.
 
 **Q: Сравнение с Hyperliquid? Drift?**
-A: Hyperliquid — свой L1, мы используем существующий XRPL. Drift — Solidity (был драйн $280M). Мы — TEE, нет re-entrancy/flash loan вектора.
+A: Hyperliquid — свой L1, мы используем существующий XRPL. Drift — Solana perp DEX, апрель 2026 потерял $280M из-за компрометации multisig через social engineering (не баг в смарт-контракте, а человеческий фактор). У нас подписанты — SGX enclaves, ключи никогда не существуют вне процессора, multisig между процессорами а не людьми → этот класс атак не применим.
 
 ---
 
