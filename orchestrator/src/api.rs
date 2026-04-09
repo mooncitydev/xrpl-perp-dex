@@ -518,6 +518,45 @@ async fn submit_order(
                     taker_user_id: t.taker_user_id.clone(),
                     timestamp_ms: t.timestamp_ms,
                 });
+
+                // Per-side Fill events (user-specific)
+                // Taker's side matches taker_side; maker is the opposite.
+                let taker_side_str = format!("{}", t.taker_side);
+                let maker_side_str = match t.taker_side {
+                    Side::Long => "short",
+                    Side::Short => "long",
+                }
+                .to_string();
+                let _ = state.ws_tx.send(WsEvent::Fill {
+                    user_id: t.taker_user_id.clone(),
+                    order_id: t.taker_order_id,
+                    trade_id: t.trade_id,
+                    side: taker_side_str,
+                    role: "taker".into(),
+                    price: t.price.to_string(),
+                    size: t.size.to_string(),
+                    timestamp_ms: t.timestamp_ms,
+                });
+                let _ = state.ws_tx.send(WsEvent::Fill {
+                    user_id: t.maker_user_id.clone(),
+                    order_id: t.maker_order_id,
+                    trade_id: t.trade_id,
+                    side: maker_side_str,
+                    role: "maker".into(),
+                    price: t.price.to_string(),
+                    size: t.size.to_string(),
+                    timestamp_ms: t.timestamp_ms,
+                });
+
+                // Position changed hints — clients re-fetch /v1/account/positions
+                let _ = state.ws_tx.send(WsEvent::PositionChanged {
+                    user_id: t.taker_user_id.clone(),
+                    reason: "fill".into(),
+                });
+                let _ = state.ws_tx.send(WsEvent::PositionChanged {
+                    user_id: t.maker_user_id.clone(),
+                    reason: "fill".into(),
+                });
             }
             // Broadcast orderbook snapshot after trade
             if !result.trades.is_empty() {
@@ -533,6 +572,16 @@ async fn submit_order(
                         .collect(),
                 });
             }
+
+            // Taker order lifecycle update
+            let _ = state.ws_tx.send(WsEvent::OrderUpdate {
+                user_id: result.order.user_id.clone(),
+                order_id: result.order.id,
+                status: format!("{:?}", result.order.status).to_lowercase(),
+                filled: result.order.filled.to_string(),
+                remaining: result.order.remaining().to_string(),
+                client_order_id: result.order.client_order_id.clone(),
+            });
 
             let trades_json: Vec<serde_json::Value> = result
                 .trades
@@ -582,11 +631,22 @@ async fn cancel_order(
     }
 
     match state.engine.cancel_order(order_id).await {
-        Ok(order) => ok(serde_json::json!({
-            "order_id": order.id,
-            "status": format!("{:?}", order.status),
-        }))
-        .into_response(),
+        Ok(order) => {
+            // Broadcast order lifecycle update
+            let _ = state.ws_tx.send(WsEvent::OrderUpdate {
+                user_id: order.user_id.clone(),
+                order_id: order.id,
+                status: format!("{:?}", order.status).to_lowercase(),
+                filled: order.filled.to_string(),
+                remaining: order.remaining().to_string(),
+                client_order_id: order.client_order_id.clone(),
+            });
+            ok(serde_json::json!({
+                "order_id": order.id,
+                "status": format!("{:?}", order.status),
+            }))
+            .into_response()
+        }
         Err(e) => err(StatusCode::NOT_FOUND, &e.to_string()).into_response(),
     }
 }
@@ -602,6 +662,17 @@ async fn cancel_all_orders(
         }
     };
     let cancelled = state.engine.cancel_all(&user_id).await;
+    // Broadcast order lifecycle updates for each cancelled order
+    for order in &cancelled {
+        let _ = state.ws_tx.send(WsEvent::OrderUpdate {
+            user_id: order.user_id.clone(),
+            order_id: order.id,
+            status: format!("{:?}", order.status).to_lowercase(),
+            filled: order.filled.to_string(),
+            remaining: order.remaining().to_string(),
+            client_order_id: order.client_order_id.clone(),
+        });
+    }
     ok(serde_json::json!({
         "cancelled": cancelled.len(),
     }))

@@ -145,6 +145,11 @@ async fn run_liquidation_scan(
                         user_id: user.to_string(),
                         price: float_to_fp8_string(current_price),
                     });
+                    // Nudge the user's client to re-fetch positions.
+                    let _ = ws_tx.send(WsEvent::PositionChanged {
+                        user_id: user.to_string(),
+                        reason: "liquidation".into(),
+                    });
                     if let Some(db) = db {
                         db.insert_liquidation(pos_id, user, current_price).await;
                     }
