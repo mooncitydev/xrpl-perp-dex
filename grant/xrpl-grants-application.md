@@ -266,6 +266,26 @@ Escrow account: [`rM44W1FkXrvwiQ6p4GLNP2yfERA12d4Qqx`](https://testnet.xrpl.org/
 - Persistent libp2p identity (peer_id стабилен между рестартами)
 - Heartbeat-level debug observability для операционной форензики
 
+### 5.3b Passive PostgreSQL репликация между операторами (верифицирована live)
+
+Каждый оператор хранит историю (trades, liquidations, deposits) в своей
+локальной PostgreSQL. Validator batch replay loop пишет те же строки,
+что и sequencer, с ключом `(trade_id, market)` и
+`ON CONFLICT DO NOTHING` для идемпотентности. Проверено 9 апреля 2026
+реальными crossing orders на sgx-node-1:
+
+```
+alice limit SELL 10 @ 1.0  →  matched против bob market BUY 10  →  trade_id=1
+
+5 секунд спустя строка присутствует на всех трёх локальных PostgreSQL:
+  sgx-node-1 (sequencer)  ← записано через submit_order
+  sgx-node-2 (validator)  ← записано через validator batch replay
+  sgx-node-3 (validator)  ← записано через validator batch replay
+```
+
+Пропагация: libp2p gossipsub batch → validator replay loop → enclave
+position open + PG insert. Reproducer: `tests/test_b31_replication.py`.
+
 ### 5.4 Test coverage
 
 - **Rust unit tests**: 86 (auth, orderbook, election, p2p, trading, types, WebSocket)

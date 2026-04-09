@@ -131,6 +131,40 @@ Code: `orchestrator/src/election.rs` (509 lines, 10 unit tests),
 
 ---
 
+## 4b. Passive cross-operator PostgreSQL replication (verified live)
+
+Historical data (trades, liquidations, deposits) is stored in PostgreSQL
+on each operator. To make sure all three operators have consistent
+history regardless of which one served the original request, the
+validator batch replay loop writes the same rows that the sequencer
+wrote — relying on `ON CONFLICT (trade_id, market) DO NOTHING` for
+idempotency.
+
+Verified end-to-end on the live 3-node Azure cluster on 2026-04-09:
+
+```
+alice: limit SELL 10 @ 1.00 submitted at sgx-node-1 (sequencer)
+bob:   market BUY  10 @ market submitted at sgx-node-1
+       → matched, trade_id = 1 produced by the sequencer
+
+5 seconds later, querying the local PostgreSQL on each node:
+
+  sgx-node-1 | 1 | alice | bob | 1.0 | 10.0   ← wrote via submit_order
+  sgx-node-2 | 1 | alice | bob | 1.0 | 10.0   ← wrote via validator replay
+  sgx-node-3 | 1 | alice | bob | 1.0 | 10.0   ← wrote via validator replay
+```
+
+Propagation path: REST → CLOB match → `api.rs::submit_order` writes to
+local PG → sequencer publishes OrderBatch via libp2p gossipsub →
+validators deserialize and hit `validator_perp.open_position()` on
+their local enclaves AND `db.insert_trade()` on their local PG. Total
+latency from order submission to row present on all 3 PGs: <5 seconds.
+
+Reproducer: `tests/test_b31_replication.py` in the repo. Schema
+migration for existing databases: `orchestrator/migrations/001_passive_replication_idempotency.sql`.
+
+---
+
 ## 5. Code quality and test coverage
 
 ### Repositories

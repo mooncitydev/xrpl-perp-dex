@@ -254,6 +254,27 @@ in `research/election-split-brain-test-report.md`. Summary:
 - Persistent libp2p identity (peer_id stable across restarts)
 - Heartbeat-level debug observability for operational forensics
 
+### 5.3b Passive PostgreSQL replication across operators (verified live)
+
+Each operator stores historical data (trades, liquidations, deposits) in its
+own local PostgreSQL instance. The validator batch replay loop writes the
+same rows the sequencer wrote, keyed on `(trade_id, market)` with
+`ON CONFLICT DO NOTHING` for idempotency. Verified on 2026-04-09 with real
+crossing orders submitted to sgx-node-1:
+
+```
+alice limit SELL 10 @ 1.0  →  matched against bob market BUY 10  →  trade_id=1
+
+5 s later, row present on all three local PostgreSQL instances:
+  sgx-node-1 (sequencer)  ← wrote via submit_order
+  sgx-node-2 (validator)  ← wrote via validator batch replay
+  sgx-node-3 (validator)  ← wrote via validator batch replay
+```
+
+Propagation: libp2p gossipsub batch → validator replay loop → enclave
+position open + PG insert. Reproducer:
+`tests/test_b31_replication.py`.
+
 ### 5.4 Test coverage
 
 - **Rust unit tests**: 86 (auth, orderbook, election, p2p, trading, types, WebSocket)
