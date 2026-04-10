@@ -94,6 +94,13 @@ struct Cli {
     /// PostgreSQL connection URL (optional — history disabled if not set)
     #[arg(long)]
     database_url: Option<String>,
+
+    /// Path to signers config JSON for multisig withdrawals. The file must
+    /// contain `{"signers": [...], "quorum": 2}` with each signer's
+    /// enclave_url, address, session_key, compressed_pubkey, xrpl_address.
+    /// If not set, withdrawals fall back to single-operator mode.
+    #[arg(long)]
+    signers_config: Option<PathBuf>,
 }
 
 // ── Funding rate ────────────────────────────────────────────────
@@ -239,6 +246,29 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Load multisig signers config (optional — without it, withdrawals are disabled)
+    let signers_config = match &cli.signers_config {
+        Some(path) => {
+            let data = std::fs::read_to_string(path)
+                .with_context(|| format!("failed to read signers config: {}", path.display()))?;
+            let mut cfg: withdrawal::SignersConfig =
+                serde_json::from_str(&data).context("invalid signers config JSON")?;
+            if cfg.escrow_address.is_empty() {
+                cfg.escrow_address = escrow_address.clone();
+            }
+            info!(
+                signers = cfg.signers.len(),
+                quorum = cfg.quorum,
+                "loaded multisig signers config"
+            );
+            Some(cfg)
+        }
+        None => {
+            info!("no --signers-config, multisig withdrawals disabled");
+            None
+        }
+    };
+
     let app_state = Arc::new(AppState {
         engine,
         perp: PerpClient::new(&cli.enclave_url)?,
@@ -249,6 +279,7 @@ async fn main() -> Result<()> {
         last_funding_time: last_funding_time.clone(),
         xrpl_url: cli.xrpl_url.clone(),
         escrow_address: escrow_address.clone(),
+        signers_config,
         db: db.clone(),
     });
 

@@ -1,21 +1,25 @@
-//! XRPL withdrawal flow: margin check in enclave + submit Payment to XRPL.
+//! XRPL withdrawal flow: margin check in enclave + 2-of-3 multisig submit to XRPL.
 //!
-//! Uses xrpl-mithril-codec for proper XRPL binary serialization.
-//!
-//! MVP: single operator, single enclave signature.
-//! Production: 2-of-3 multisig via SignerListSet (see doc 04).
+//! Uses xrpl-mithril-codec for proper XRPL binary serialization and
+//! multi_signing_hash for per-signer multisig hash computation.
 //!
 //! Flow:
 //!   1. User calls POST /v1/withdraw { user_id, amount, destination }
-//!   2. Orchestrator autofills tx (Sequence, Fee) from XRPL
-//!   3. Orchestrator computes signing_hash via xrpl-mithril-codec
-//!   4. Enclave checks margin + ECDSA signs the hash
-//!   5. Orchestrator injects signature, serializes blob, submits to XRPL
+//!   2. Orchestrator asks the local enclave to check margin + deduct balance
+//!   3. Orchestrator autofills tx (Sequence, Fee) from XRPL
+//!   4. For each signer (up to quorum): compute multi_signing_hash, call
+//!      the signer's enclave /v1/pool/sign, collect DER signature
+//!   5. Assemble Signers[] array sorted by AccountID
+//!   6. Submit via submit_multisigned RPC to XRPL
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use xrpl_mithril_codec::signing;
+
+use crate::xrpl_signer;
+
+// ── Types ─────────────────────────────────────────────────────────
 
 /// Withdrawal request from user.
 #[derive(Debug, Deserialize)]
@@ -35,143 +39,276 @@ pub struct WithdrawResult {
     pub message: String,
 }
 
-/// Submit a withdrawal: enclave signs, orchestrator submits to XRPL.
+/// One operator's signing credentials (loaded from --signers-config).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SignerConfig {
+    pub name: String,
+    pub enclave_url: String,
+    pub address: String,          // 0x... Ethereum-style for /v1/pool/sign
+    pub session_key: String,      // 0x... per-account auth token
+    pub compressed_pubkey: String, // hex, 33 bytes
+    pub xrpl_address: String,     // r-address
+}
+
+/// Multi-operator signing configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SignersConfig {
+    pub signers: Vec<SignerConfig>,
+    pub quorum: usize,
+    #[serde(default)]
+    pub escrow_address: String,
+}
+
+// ── Enclave signing helper ────────────────────────────────────────
+
+/// Ask a remote enclave to ECDSA-sign a 32-byte hash.
+/// Returns (DER signature hex uppercase, compressed pubkey hex uppercase).
+async fn sign_with_enclave(
+    http: &reqwest::Client,
+    signer: &SignerConfig,
+    hash: &[u8; 32],
+) -> Result<(String, String)> {
+    let hash_hex = format!("0x{}", hex::encode(hash));
+    let resp: serde_json::Value = http
+        .post(format!("{}/pool/sign", signer.enclave_url))
+        .json(&serde_json::json!({
+            "from": signer.address,
+            "hash": hash_hex,
+            "session_key": signer.session_key,
+        }))
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await
+        .with_context(|| format!("sign request to {} failed", signer.name))?
+        .json()
+        .await
+        .with_context(|| format!("sign response from {} is not JSON", signer.name))?;
+
+    if resp["status"].as_str() != Some("success") {
+        anyhow::bail!(
+            "{} sign failed: {}",
+            signer.name,
+            resp.get("message").unwrap_or(&resp)
+        );
+    }
+
+    let r_hex = resp["signature"]["r"]
+        .as_str()
+        .context("missing r in signature")?;
+    let s_hex = resp["signature"]["s"]
+        .as_str()
+        .context("missing s in signature")?;
+
+    let r_bytes = hex::decode(r_hex).context("invalid r hex")?;
+    let s_bytes = hex::decode(s_hex).context("invalid s hex")?;
+    let der = xrpl_signer::der_encode_signature(&r_bytes, &s_bytes);
+    let der_hex = hex::encode_upper(&der);
+
+    Ok((der_hex, signer.compressed_pubkey.to_uppercase()))
+}
+
+// ── Main withdrawal flow ──────────────────────────────────────────
+
+/// Submit a multisig withdrawal: margin check in enclave + 2-of-N signing.
 pub async fn process_withdrawal(
     perp: &crate::perp_client::PerpClient,
     xrpl_url: &str,
     escrow_address: &str,
-    escrow_account_id: &str,
-    session_key: &str,
+    signers_config: &SignersConfig,
     req: &WithdrawRequest,
 ) -> Result<WithdrawResult> {
     info!(
         user = %req.user_id,
         amount = %req.amount,
         destination = %req.destination,
-        "processing withdrawal"
+        "processing multisig withdrawal"
     );
 
-    // Step 1: Autofill — get account sequence from XRPL
+    // Step 1: Margin check in local enclave — deducts balance if sufficient.
+    // We pass a dummy hash because the actual signing is done per-signer below.
+    let dummy_hash = "0".repeat(64);
+    let first_signer = signers_config
+        .signers
+        .first()
+        .context("no signers configured")?;
+    let margin_result = perp
+        .withdraw(
+            &req.user_id,
+            &req.amount,
+            &first_signer.address,
+            &first_signer.session_key,
+            &dummy_hash,
+        )
+        .await;
+
+    match &margin_result {
+        Ok(resp) if resp["status"].as_str() == Some("success") => {
+            info!(user = %req.user_id, "margin check passed, balance deducted");
+        }
+        Ok(resp) => {
+            let msg = resp["message"]
+                .as_str()
+                .unwrap_or("margin check failed")
+                .to_string();
+            return Ok(WithdrawResult {
+                status: "error".into(),
+                amount: req.amount.clone(),
+                destination: req.destination.clone(),
+                xrpl_tx_hash: None,
+                message: msg,
+            });
+        }
+        Err(e) => {
+            return Ok(WithdrawResult {
+                status: "error".into(),
+                amount: req.amount.clone(),
+                destination: req.destination.clone(),
+                xrpl_tx_hash: None,
+                message: format!("Enclave error: {}", e),
+            });
+        }
+    }
+
+    // Step 2: Autofill — get account sequence from XRPL
     let sequence = fetch_account_sequence(xrpl_url, escrow_address)
         .await
-        .unwrap_or(1); // fallback for testnet
+        .unwrap_or(1);
 
-    // Step 2: Build Payment tx JSON
+    // Step 3: Build unsigned Payment tx (SigningPubKey="" signals multisig)
+    // Fee for multisig = base_fee * (1 + N_signers). Use generous fee.
+    let fee = format!("{}", 12 * (1 + signers_config.quorum as u64));
     let tx_json = serde_json::json!({
         "TransactionType": "Payment",
         "Account": escrow_address,
         "Destination": req.destination,
-        "Amount": {
-            "currency": "USD",
-            "issuer": escrow_address,
-            "value": req.amount
-        },
-        "Fee": "12",
+        "Amount": format!("{}", (req.amount.parse::<f64>().unwrap_or(0.0) * 1_000_000.0) as u64),
+        "Fee": fee,
         "Sequence": sequence,
-        "SigningPubKey": "" // Will be filled by enclave or from config
+        "SigningPubKey": ""
     });
-
-    // Step 3: Compute signing hash via xrpl-mithril-codec
     let tx_map = tx_json.as_object().context("tx_json is not an object")?;
-    let sign_hash = signing::signing_hash(tx_map)
-        .map_err(|e| anyhow::anyhow!("codec signing_hash failed: {:?}", e))?;
-    let sign_hash_hex = hex::encode(sign_hash);
 
     info!(
-        sign_hash = %sign_hash_hex,
-        sequence = sequence,
-        "computed XRPL signing hash via binary codec"
+        sequence,
+        fee = %fee,
+        signers = signers_config.signers.len(),
+        quorum = signers_config.quorum,
+        "built unsigned multisig Payment tx"
     );
 
-    // Step 4: Call enclave — margin check + ECDSA sign
-    let result = perp
-        .withdraw(
-            &req.user_id,
-            &req.amount,
-            escrow_account_id,
-            session_key,
-            &sign_hash_hex,
-        )
-        .await;
+    // Step 4: Collect signatures from quorum signers
+    let http = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true) // self-signed TLS on enclaves
+        .build()
+        .context("failed to build HTTP client")?;
 
-    match result {
-        Ok(resp) => {
-            let status = resp["status"].as_str().unwrap_or("unknown");
-            if status != "success" {
-                let msg = resp["message"]
-                    .as_str()
-                    .unwrap_or("enclave rejected withdrawal")
-                    .to_string();
-                return Ok(WithdrawResult {
-                    status: "error".into(),
-                    amount: req.amount.clone(),
-                    destination: req.destination.clone(),
-                    xrpl_tx_hash: None,
-                    message: msg,
-                });
+    let mut collected_signers: Vec<serde_json::Value> = Vec::new();
+
+    for signer in &signers_config.signers {
+        if collected_signers.len() >= signers_config.quorum {
+            break;
+        }
+        // Decode r-address → 20-byte AccountID for multi_signing_hash
+        let account_id = match xrpl_signer::decode_xrpl_address(&signer.xrpl_address) {
+            Ok(id) => id,
+            Err(e) => {
+                warn!(signer = %signer.name, "failed to decode address: {}", e);
+                continue;
             }
+        };
 
-            let signature_hex = resp["signature"].as_str().unwrap_or("").to_string();
+        // Compute per-signer multisig hash
+        let hash = signing::multi_signing_hash(tx_map, &account_id)
+            .map_err(|e| anyhow::anyhow!("multi_signing_hash for {} failed: {:?}", signer.name, e))?;
 
-            info!(
-                user = %req.user_id,
-                sig_len = signature_hex.len(),
-                "enclave signed withdrawal"
-            );
-
-            // Step 5: Inject signature into tx, serialize blob, submit
-            let mut signed_tx = tx_json.clone();
-            signed_tx["TxnSignature"] = serde_json::Value::String(signature_hex.to_uppercase());
-
-            // Serialize to binary blob
-            let signed_map = signed_tx
-                .as_object()
-                .context("signed tx is not an object")?;
-            let mut blob = Vec::new();
-            xrpl_mithril_codec::serializer::serialize_json_object(signed_map, &mut blob, false)
-                .map_err(|e| anyhow::anyhow!("codec serialize failed: {:?}", e))?;
-            let blob_hex = hex::encode_upper(&blob);
-
-            // Submit blob to XRPL
-            match submit_blob(xrpl_url, &blob_hex).await {
-                Ok(xrpl_hash) => {
-                    info!(
-                        user = %req.user_id,
-                        xrpl_hash = %xrpl_hash,
-                        "withdrawal submitted to XRPL"
-                    );
-                    Ok(WithdrawResult {
-                        status: "success".into(),
-                        amount: req.amount.clone(),
-                        destination: req.destination.clone(),
-                        xrpl_tx_hash: Some(xrpl_hash),
-                        message: "withdrawal submitted to XRPL".into(),
-                    })
-                }
-                Err(e) => {
-                    error!(user = %req.user_id, "XRPL submission failed: {}", e);
-                    Ok(WithdrawResult {
-                        status: "signed_but_not_submitted".into(),
-                        amount: req.amount.clone(),
-                        destination: req.destination.clone(),
-                        xrpl_tx_hash: None,
-                        message: format!(
-                            "Enclave signed but XRPL submission failed: {}. Balance already deducted.",
-                            e
-                        ),
-                    })
-                }
+        // Call signer's enclave
+        match sign_with_enclave(&http, signer, &hash).await {
+            Ok((der_hex, pubkey_hex)) => {
+                info!(
+                    signer = %signer.name,
+                    xrpl_addr = %signer.xrpl_address,
+                    der_len = der_hex.len() / 2,
+                    "collected multisig signature"
+                );
+                collected_signers.push(serde_json::json!({
+                    "Signer": {
+                        "Account": signer.xrpl_address,
+                        "SigningPubKey": pubkey_hex,
+                        "TxnSignature": der_hex,
+                    }
+                }));
+            }
+            Err(e) => {
+                warn!(signer = %signer.name, "signing failed: {}", e);
+                // Continue to next signer — we may still reach quorum
             }
         }
-        Err(e) => Ok(WithdrawResult {
+    }
+
+    if collected_signers.len() < signers_config.quorum {
+        error!(
+            collected = collected_signers.len(),
+            quorum = signers_config.quorum,
+            "insufficient signatures for multisig withdrawal"
+        );
+        return Ok(WithdrawResult {
             status: "error".into(),
             amount: req.amount.clone(),
             destination: req.destination.clone(),
             xrpl_tx_hash: None,
-            message: format!("Enclave error: {}", e),
-        }),
+            message: format!(
+                "only {} of {} required signatures collected",
+                collected_signers.len(),
+                signers_config.quorum
+            ),
+        });
+    }
+
+    // Step 5: Sort Signers by AccountID (ascending bytes — XRPL canonical order)
+    collected_signers.sort_by(|a, b| {
+        let addr_a = a["Signer"]["Account"].as_str().unwrap_or("");
+        let addr_b = b["Signer"]["Account"].as_str().unwrap_or("");
+        let id_a = xrpl_signer::decode_xrpl_address(addr_a).unwrap_or([0xff; 20]);
+        let id_b = xrpl_signer::decode_xrpl_address(addr_b).unwrap_or([0xff; 20]);
+        id_a.cmp(&id_b)
+    });
+
+    // Step 6: Submit via submit_multisigned RPC
+    let mut full_tx = tx_json.clone();
+    full_tx["Signers"] = serde_json::Value::Array(collected_signers);
+
+    match submit_multisigned(xrpl_url, &full_tx).await {
+        Ok(xrpl_hash) => {
+            info!(
+                user = %req.user_id,
+                xrpl_hash = %xrpl_hash,
+                "multisig withdrawal submitted to XRPL"
+            );
+            Ok(WithdrawResult {
+                status: "success".into(),
+                amount: req.amount.clone(),
+                destination: req.destination.clone(),
+                xrpl_tx_hash: Some(xrpl_hash),
+                message: "multisig withdrawal submitted to XRPL".into(),
+            })
+        }
+        Err(e) => {
+            error!(user = %req.user_id, "XRPL submission failed: {}", e);
+            Ok(WithdrawResult {
+                status: "signed_but_not_submitted".into(),
+                amount: req.amount.clone(),
+                destination: req.destination.clone(),
+                xrpl_tx_hash: None,
+                message: format!(
+                    "Signatures collected but XRPL submission failed: {}. Balance already deducted.",
+                    e
+                ),
+            })
+        }
     }
 }
+
+// ── XRPL RPC helpers ──────────────────────────────────────────────
 
 /// Fetch account Sequence number from XRPL.
 async fn fetch_account_sequence(xrpl_url: &str, account: &str) -> Result<u32> {
@@ -186,28 +323,27 @@ async fn fetch_account_sequence(xrpl_url: &str, account: &str) -> Result<u32> {
         .await?
         .json()
         .await?;
-
     let seq = resp["result"]["account_data"]["Sequence"]
         .as_u64()
         .context("missing Sequence in account_info")?;
     Ok(seq as u32)
 }
 
-/// Submit a pre-signed tx blob to XRPL via JSON-RPC.
-async fn submit_blob(xrpl_url: &str, blob_hex: &str) -> Result<String> {
+/// Submit a multisigned transaction via submit_multisigned RPC.
+async fn submit_multisigned(xrpl_url: &str, tx_json: &serde_json::Value) -> Result<String> {
     let client = reqwest::Client::new();
     let resp: serde_json::Value = client
         .post(xrpl_url)
         .json(&serde_json::json!({
-            "method": "submit",
-            "params": [{"tx_blob": blob_hex}]
+            "method": "submit_multisigned",
+            "params": [{"tx_json": tx_json}]
         }))
         .send()
         .await
-        .context("XRPL submit request failed")?
+        .context("XRPL submit_multisigned request failed")?
         .json()
         .await
-        .context("XRPL submit response parse failed")?;
+        .context("XRPL submit_multisigned response parse failed")?;
 
     let engine_result = resp["result"]["engine_result"]
         .as_str()
@@ -216,6 +352,7 @@ async fn submit_blob(xrpl_url: &str, blob_hex: &str) -> Result<String> {
     if engine_result == "tesSUCCESS" || engine_result.starts_with("tes") {
         let hash = resp["result"]["tx_json"]["hash"]
             .as_str()
+            .or_else(|| resp["result"]["hash"].as_str())
             .unwrap_or("unknown")
             .to_string();
         Ok(hash)

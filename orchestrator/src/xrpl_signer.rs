@@ -92,6 +92,32 @@ pub fn pubkey_to_xrpl_address(uncompressed_hex: &str) -> Result<String> {
 ///
 /// Both r and s are big-endian unsigned integers.
 /// If the high bit is set, a 0x00 byte is prepended (ASN.1 signed integer).
+/// Decode an XRPL classic r-address into a 20-byte AccountID.
+///
+/// Base58Check with XRPL alphabet: decode → strip 1-byte version prefix
+/// and 4-byte checksum → 20 bytes remain.
+pub fn decode_xrpl_address(addr: &str) -> Result<[u8; 20]> {
+    const XRPL_ALPHABET: &[u8; 58] = b"rpshnaf39wBUDNEGHJKLM4PQRST7VWXYZ2bcdeCg65jkm8oFqi1tuvAxyz";
+    let alphabet = bs58::Alphabet::new(XRPL_ALPHABET).expect("valid alphabet");
+    let decoded = bs58::decode(addr)
+        .with_alphabet(&alphabet)
+        .into_vec()
+        .context("invalid XRPL base58 address")?;
+    if decoded.len() != 25 {
+        bail!("decoded XRPL address is {} bytes, expected 25", decoded.len());
+    }
+    let payload = &decoded[..21];
+    let checksum = &decoded[21..25];
+    let hash1 = Sha256::digest(payload);
+    let hash2 = Sha256::digest(hash1);
+    if &hash2[..4] != checksum {
+        bail!("XRPL address checksum mismatch");
+    }
+    let mut account_id = [0u8; 20];
+    account_id.copy_from_slice(&decoded[1..21]);
+    Ok(account_id)
+}
+
 pub fn der_encode_signature(r: &[u8], s: &[u8]) -> Vec<u8> {
     fn encode_integer(bytes: &[u8]) -> Vec<u8> {
         // Strip leading zeros but keep at least one byte

@@ -50,6 +50,8 @@ pub struct AppState {
     /// XRPL config for withdrawals
     pub xrpl_url: String,
     pub escrow_address: String,
+    /// Multisig signers config (None = single-operator fallback)
+    pub signers_config: Option<crate::withdrawal::SignersConfig>,
     /// PostgreSQL for history (optional — trading works without it)
     pub db: Option<crate::db::Db>,
 }
@@ -874,21 +876,12 @@ async fn withdraw(
         return err(StatusCode::BAD_REQUEST, "invalid XRPL destination address").into_response();
     }
 
-    let escrow_account_id = &state.escrow_address;
-    // Load session key from escrow config — reject withdrawal if not found
-    let session_key = match std::fs::read_to_string("/tmp/perp-9088/escrow_account.json")
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| {
-            v["session_key"]
-                .as_str()
-                .map(|s| s.trim_start_matches("0x").to_string())
-        }) {
-        Some(key) if key.len() == 64 => key,
-        _ => {
+    let signers = match &state.signers_config {
+        Some(cfg) => cfg.clone(),
+        None => {
             return err(
                 StatusCode::SERVICE_UNAVAILABLE,
-                "escrow signing key not configured",
+                "multisig signers not configured (--signers-config required for withdrawals)",
             )
             .into_response();
         }
@@ -898,8 +891,7 @@ async fn withdraw(
         &state.perp,
         &state.xrpl_url,
         &state.escrow_address,
-        escrow_account_id,
-        &session_key,
+        &signers,
         &req,
     )
     .await
