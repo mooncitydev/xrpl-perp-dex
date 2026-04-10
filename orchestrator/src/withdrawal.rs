@@ -139,12 +139,13 @@ pub async fn process_withdrawal(
         .or_else(|| signers_config.signers.first())
         .context("no signers configured (need local_signer or at least one signer)")?;
     let dummy_hash = "0".repeat(64);
+    let local_session_key = local.session_key.trim_start_matches("0x");
     let margin_result = perp
         .withdraw(
             &req.user_id,
             &req.amount,
             &local.address,
-            &local.session_key,
+            local_session_key,
             &dummy_hash,
         )
         .await;
