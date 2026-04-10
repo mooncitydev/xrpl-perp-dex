@@ -154,6 +154,81 @@ impl Db {
         }
     }
 
+    // ── Resting orders (C5.1 orderbook persistence for failover) ──
+
+    /// Upsert a resting order (insert or update filled amount).
+    pub async fn upsert_resting_order(&self, o: &crate::orderbook::Order) {
+        let r = sqlx::query(
+            "INSERT INTO resting_orders \
+             (order_id, user_id, market, side, price, size, filled, leverage, reduce_only, timestamp_ms, client_order_id) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+             ON CONFLICT (order_id) DO UPDATE SET filled = $7",
+        )
+        .bind(o.id as i64)
+        .bind(&o.user_id)
+        .bind(&o.market)
+        .bind(format!("{}", o.side))
+        .bind(o.price.raw())
+        .bind(o.size.raw())
+        .bind(o.filled.raw())
+        .bind(o.leverage as i32)
+        .bind(o.reduce_only)
+        .bind(o.timestamp_ms as i64)
+        .bind(&o.client_order_id)
+        .execute(&self.pool)
+        .await;
+        if let Err(e) = r {
+            error!("pg upsert_resting_order failed: {}", e);
+        }
+    }
+
+    /// Remove a resting order (filled or cancelled).
+    pub async fn delete_resting_order(&self, order_id: u64) {
+        let r = sqlx::query("DELETE FROM resting_orders WHERE order_id = $1")
+            .bind(order_id as i64)
+            .execute(&self.pool)
+            .await;
+        if let Err(e) = r {
+            error!("pg delete_resting_order failed: {}", e);
+        }
+    }
+
+    /// Load all resting orders from PG (for book rebuild on failover).
+    pub async fn load_resting_orders(&self) -> Vec<crate::orderbook::Order> {
+        let rows = sqlx::query_as::<_, (i64, String, String, String, i64, i64, i64, i32, bool, i64, Option<String>)>(
+            "SELECT order_id, user_id, market, side, price, size, filled, leverage, reduce_only, timestamp_ms, client_order_id \
+             FROM resting_orders ORDER BY order_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .unwrap_or_default();
+
+        rows.into_iter()
+            .filter_map(|(id, user_id, market, side, price, size, filled, leverage, reduce_only, ts, coid)| {
+                let side = match side.as_str() {
+                    "long" | "buy" => crate::types::Side::Long,
+                    _ => crate::types::Side::Short,
+                };
+                Some(crate::orderbook::Order {
+                    id: id as u64,
+                    user_id,
+                    market,
+                    side,
+                    order_type: crate::orderbook::OrderType::Limit,
+                    price: FP8(price),
+                    size: FP8(size),
+                    filled: FP8(filled),
+                    leverage: leverage as u32,
+                    status: crate::orderbook::OrderStatus::Open,
+                    time_in_force: crate::orderbook::TimeInForce::Gtc,
+                    reduce_only,
+                    timestamp_ms: ts as u64,
+                    client_order_id: coid,
+                })
+            })
+            .collect()
+    }
+
     /// Query trade history for a user.
     pub async fn get_user_trades(
         &self,

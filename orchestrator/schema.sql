@@ -74,6 +74,23 @@ CREATE TABLE IF NOT EXISTS liquidations (
 );
 CREATE INDEX IF NOT EXISTS idx_liquidations_user ON liquidations(user_id, created_at DESC);
 
+-- Resting limit orders currently on the in-memory CLOB. Persisted so that
+-- a new sequencer can rebuild the book from PG on failover (C5.1).
+CREATE TABLE IF NOT EXISTS resting_orders (
+    order_id BIGINT PRIMARY KEY,
+    user_id VARCHAR(36) NOT NULL,
+    market VARCHAR(32) NOT NULL DEFAULT 'XRP-RLUSD-PERP',
+    side VARCHAR(8) NOT NULL,
+    price BIGINT NOT NULL,
+    size BIGINT NOT NULL,
+    filled BIGINT NOT NULL DEFAULT 0,
+    leverage INT NOT NULL DEFAULT 1,
+    reduce_only BOOLEAN NOT NULL DEFAULT FALSE,
+    timestamp_ms BIGINT NOT NULL,
+    client_order_id VARCHAR(64),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS price_candles (
     id BIGSERIAL PRIMARY KEY,
     market VARCHAR(32) NOT NULL DEFAULT 'XRP-RLUSD-PERP',

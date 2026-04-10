@@ -584,6 +584,23 @@ async fn submit_order(
                 client_order_id: result.order.client_order_id.clone(),
             });
 
+            // C5.1: persist resting-order changes to PG for failover recovery.
+            // Taker rested?
+            if let Some(db) = &state.db {
+                if result.order.status == crate::orderbook::OrderStatus::Open
+                    && result.order.remaining().raw() > 0
+                {
+                    db.upsert_resting_order(&result.order).await;
+                }
+                // Maker orders that were fully filled get removed from book.
+                for t in &result.trades {
+                    match state.engine.get_order(t.maker_order_id).await {
+                        Some(maker) => db.upsert_resting_order(&maker).await, // partial fill
+                        None => db.delete_resting_order(t.maker_order_id).await, // fully filled
+                    }
+                }
+            }
+
             let trades_json: Vec<serde_json::Value> = result
                 .trades
                 .iter()
@@ -642,6 +659,10 @@ async fn cancel_order(
                 remaining: order.remaining().to_string(),
                 client_order_id: order.client_order_id.clone(),
             });
+            // C5.1: remove from persisted resting orders
+            if let Some(db) = &state.db {
+                db.delete_resting_order(order.id).await;
+            }
             ok(serde_json::json!({
                 "order_id": order.id,
                 "status": format!("{:?}", order.status),
@@ -673,6 +694,10 @@ async fn cancel_all_orders(
             remaining: order.remaining().to_string(),
             client_order_id: order.client_order_id.clone(),
         });
+        // C5.1: remove from persisted resting orders
+        if let Some(db) = &state.db {
+            db.delete_resting_order(order.id).await;
+        }
     }
     ok(serde_json::json!({
         "cancelled": cancelled.len(),

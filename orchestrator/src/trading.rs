@@ -313,6 +313,18 @@ impl TradingEngine {
         None
     }
 
+    /// Get a resting order by ID (for PG sync after matching).
+    pub async fn get_order(&self, order_id: u64) -> Option<Order> {
+        let book = self.book.lock().await;
+        book.get_order(order_id).cloned()
+    }
+
+    /// Load resting orders into the book (failover rebuild from PG).
+    pub async fn load_orders(&self, orders: Vec<Order>) {
+        let mut book = self.book.lock().await;
+        book.load_orders(orders);
+    }
+
     /// Cancel an order.
     pub async fn cancel_order(&self, order_id: u64) -> Result<Order> {
         let mut book = self.book.lock().await;

@@ -356,6 +356,38 @@ impl OrderBook {
         orders
     }
 
+    /// Get an order by ID from either side of the book.
+    pub fn get_order(&self, order_id: u64) -> Option<&Order> {
+        for level in self.bids.values() {
+            if let Some(o) = level.orders.iter().find(|o| o.id == order_id) {
+                return Some(o);
+            }
+        }
+        for level in self.asks.values() {
+            if let Some(o) = level.orders.iter().find(|o| o.id == order_id) {
+                return Some(o);
+            }
+        }
+        None
+    }
+
+    /// Load resting orders into the book (failover rebuild from PG).
+    /// Also updates next_order_id and next_trade_id to avoid collisions.
+    pub fn load_orders(&mut self, orders: Vec<Order>) {
+        for order in orders {
+            if order.id >= self.next_order_id {
+                self.next_order_id = order.id + 1;
+            }
+            self.add_to_book(order);
+        }
+        info!(
+            bids = self.bids.values().map(|l| l.orders.len()).sum::<usize>(),
+            asks = self.asks.values().map(|l| l.orders.len()).sum::<usize>(),
+            next_order_id = self.next_order_id,
+            "rebuilt orderbook from persisted resting orders"
+        );
+    }
+
     /// Get top N levels of the order book.
     #[allow(clippy::type_complexity)]
     pub fn depth(&self, levels: usize) -> (Vec<(FP8, FP8)>, Vec<(FP8, FP8)>) {

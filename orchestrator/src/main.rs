@@ -230,6 +230,15 @@ async fn main() -> Result<()> {
         }
     };
 
+    // C5.1: Rebuild orderbook from persisted resting orders (failover recovery).
+    if let Some(ref db) = db {
+        let resting = db.load_resting_orders().await;
+        if !resting.is_empty() {
+            info!(count = resting.len(), "loading resting orders from PG");
+            engine.load_orders(resting).await;
+        }
+    }
+
     let app_state = Arc::new(AppState {
         engine,
         perp: PerpClient::new(&cli.enclave_url)?,
