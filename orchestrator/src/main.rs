@@ -15,6 +15,7 @@ mod perp_client;
 mod price_feed;
 mod trading;
 mod types;
+mod vault_mm;
 mod withdrawal;
 mod ws;
 mod xrpl_monitor;
@@ -101,6 +102,24 @@ struct Cli {
     /// If not set, withdrawals fall back to single-operator mode.
     #[arg(long)]
     signers_config: Option<PathBuf>,
+
+    /// Enable the Market Making Vault (automated liquidity provider).
+    /// The vault deposits initial margin and continuously quotes bid/ask
+    /// around the mark price on the CLOB.
+    #[arg(long)]
+    vault_mm: bool,
+
+    /// Vault MM half-spread (fraction, e.g. 0.0025 = 0.25% each side).
+    #[arg(long, default_value_t = 0.0025)]
+    vault_mm_spread: f64,
+
+    /// Vault MM order size per level (FP8 string).
+    #[arg(long, default_value = "100.00000000")]
+    vault_mm_size: String,
+
+    /// Vault MM number of price levels per side.
+    #[arg(long, default_value_t = 3)]
+    vault_mm_levels: usize,
 }
 
 // ── Funding rate ────────────────────────────────────────────────
@@ -578,6 +597,21 @@ async fn main() -> Result<()> {
     let liquidation_interval = Duration::from_secs(cli.liquidation_interval);
 
     info!(escrow = %escrow_address, "orchestrator started");
+
+    // Market Making Vault (optional — enabled via --vault-mm)
+    if cli.vault_mm {
+        let vault_config = vault_mm::VaultMmConfig {
+            half_spread: cli.vault_mm_spread,
+            order_size: cli.vault_mm_size.clone(),
+            levels: cli.vault_mm_levels,
+            ..Default::default()
+        };
+        vault_mm::seed_vault_deposit(&perp, &vault_config).await;
+        let vault_state = app_state.clone();
+        tokio::spawn(async move {
+            vault_mm::run_vault_mm(vault_state, vault_config).await;
+        });
+    }
 
     let mut tick = tokio::time::interval(Duration::from_secs(1));
 
