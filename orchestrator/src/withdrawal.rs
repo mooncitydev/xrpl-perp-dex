@@ -57,6 +57,11 @@ pub struct SignersConfig {
     pub quorum: usize,
     #[serde(default)]
     pub escrow_address: String,
+    /// Credentials of the LOCAL enclave (the one this orchestrator talks to).
+    /// Used for the margin-check-and-deduct step, which must run on the
+    /// enclave that holds the user's deposit state. The signing step uses
+    /// each signer's own remote enclave.
+    pub local_signer: Option<SignerConfig>,
 }
 
 // ── Enclave signing helper ────────────────────────────────────────
@@ -125,18 +130,21 @@ pub async fn process_withdrawal(
     );
 
     // Step 1: Margin check in local enclave — deducts balance if sufficient.
-    // We pass a dummy hash because the actual signing is done per-signer below.
+    // The local_signer is the credentials of THIS orchestrator's enclave, which
+    // holds the user's deposit state. We pass a dummy hash because the actual
+    // multisig signing is done per-signer below via remote enclave calls.
+    let local = signers_config
+        .local_signer
+        .as_ref()
+        .or_else(|| signers_config.signers.first())
+        .context("no signers configured (need local_signer or at least one signer)")?;
     let dummy_hash = "0".repeat(64);
-    let first_signer = signers_config
-        .signers
-        .first()
-        .context("no signers configured")?;
     let margin_result = perp
         .withdraw(
             &req.user_id,
             &req.amount,
-            &first_signer.address,
-            &first_signer.session_key,
+            &local.address,
+            &local.session_key,
             &dummy_hash,
         )
         .await;
