@@ -196,6 +196,13 @@ pub async fn run_vault_mm(state: Arc<AppState>, config: VaultMmConfig) {
             debug!(cancelled = cancelled.len(), "vault: cancelled stale orders");
         }
 
+        // Size multipliers per level — pyramid shape (small at top, large at bottom)
+        // For 3 levels: weights [1, 4, 10] → sizes proportional to 25/100/250
+        let level_weights: Vec<f64> = (0..config.levels)
+            .map(|l| if l == 0 { 1.0 } else { (4.0_f64).powi(l as i32) })
+            .collect();
+        let total_weight: f64 = level_weights.iter().sum();
+
         // Place levels on each side
         for level in 0..config.levels {
             let spread_mult = config.half_spread * (1.0 + level as f64 * 0.5);
@@ -206,6 +213,12 @@ pub async fn run_vault_mm(state: Arc<AppState>, config: VaultMmConfig) {
                 continue;
             }
 
+            // Scale order size by level weight (pyramid: small tight, large wide)
+            let level_size = FP8::from_f64(
+                order_size.to_f64() * level_weights[level] / total_weight * config.levels as f64,
+            );
+            let level_size = if level_size.raw() <= 0 { order_size } else { level_size };
+
             // Place bid (skipped if delta neutral says "asks only")
             if quote_bids {
                 if let Err(e) = state
@@ -215,7 +228,7 @@ pub async fn run_vault_mm(state: Arc<AppState>, config: VaultMmConfig) {
                         Side::Long,
                         OrderType::Limit,
                         bid_price,
-                        order_size,
+                        level_size,
                         1, // leverage
                         crate::orderbook::TimeInForce::Gtc,
                         false,
@@ -236,7 +249,7 @@ pub async fn run_vault_mm(state: Arc<AppState>, config: VaultMmConfig) {
                         Side::Short,
                         OrderType::Limit,
                         ask_price,
-                        order_size,
+                        level_size,
                         1,
                         crate::orderbook::TimeInForce::Gtc,
                         false,
