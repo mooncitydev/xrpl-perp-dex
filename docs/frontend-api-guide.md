@@ -737,6 +737,79 @@ HTTP status: 503
 python3 dcap_verifier.py --url http://YOUR_SERVER:3000/v1 --expected-mrenclave <HASH>
 ```
 
+### Building the "Verify Enclave" Page
+
+The attestation verifier is a standalone page (e.g. `perp.ph18.io/verify`) that
+lets anyone confirm the SGX enclave is genuine. No authentication needed.
+
+**What it does:**
+1. User clicks "Verify Enclave"
+2. Frontend generates a random nonce, calls `POST /v1/attestation/quote`
+3. Displays the result: MRENCLAVE hash, quote size, verification status
+
+**Implementation (step by step):**
+
+```javascript
+// 1. Generate random challenge nonce (prevents replay)
+const nonce = '0x' + crypto.getRandomValues(new Uint8Array(32))
+  .reduce((s, b) => s + b.toString(16).padStart(2, '0'), '');
+
+// 2. Fetch attestation quote from live enclave
+const res = await fetch('https://api-perp.ph18.io/v1/attestation/quote', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ user_data: nonce }),
+});
+const data = await res.json();
+
+// 3. Parse the SGX Quote v3 structure
+if (data.status === 'success') {
+  const quoteBytes = hexToBytes(data.quote_hex);
+
+  // SGX Quote v3 layout:
+  //   bytes [0..1]   = version (0x0003)
+  //   bytes [2..3]   = attestation key type
+  //   bytes [112..143] = MRENCLAVE (32 bytes) — the enclave identity hash
+  //   bytes [144..175] = MRSIGNER  (32 bytes) — the signer identity hash
+  const mrenclave = bytesToHex(quoteBytes.slice(112, 144));
+  const mrsigner  = bytesToHex(quoteBytes.slice(144, 176));
+
+  // 4. Display to user
+  // - MRENCLAVE: unique hash of the enclave binary code
+  // - Quote size: should be 4,734 bytes (Intel SGX Quote v3 with cert chain)
+  // - Compare MRENCLAVE against the published enclave binary hash
+}
+```
+
+**UI elements to show:**
+
+| Field | Value | What it means |
+|-------|-------|---------------|
+| Status | "Intel SGX Verified ✅" or "Not available ❌" | Whether DCAP attestation succeeded |
+| MRENCLAVE | `a3b7c9d1e5f2...` (32-byte hex) | Hash of the exact code running inside the enclave. If this matches the published binary hash, the enclave is running the authentic code |
+| MRSIGNER | `8c4f5a6b7d2e...` (32-byte hex) | Identity of who built/signed the enclave |
+| Quote size | `4,734 bytes` | Size of the Intel-signed attestation proof |
+| Nonce | The random value you sent | Proves the quote is fresh (not replayed) |
+
+**Published MRENCLAVE for comparison:**
+
+The enclave binary is published at the project repo. To compute the expected MRENCLAVE:
+```bash
+# Hash the published enclave .so binary (SGX uses SHA-256 of page measurements)
+# The exact MRENCLAVE is printed during enclave build:
+#   MRENCLAVE: a3b7c9d1e5f2...
+# Compare this with what the attestation quote returns.
+```
+
+**Error handling:**
+- HTTP 503 → enclave runs on Hetzner (no SGX hardware). Show: "Attestation requires Intel SGX hardware (Azure DCsv3). This node does not support DCAP."
+- HTTP 502 → enclave is unreachable. Show: "Enclave offline, try again later."
+- `quote_size` not 4,734 → unexpected quote format, warn user.
+
+**Key point:** This page does NOT show any enclave source code. It only proves
+that the enclave binary matches what was published, using Intel's hardware-based
+attestation. Anyone can verify, no trust required.
+
 ---
 
 ## WebSocket (Real-Time Feed)
