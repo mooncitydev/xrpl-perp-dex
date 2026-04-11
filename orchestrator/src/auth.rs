@@ -181,6 +181,7 @@ pub fn verify_request(
     }
 
     // Compute hash of body (or URI for GET) + timestamp (always included)
+    // For POST with empty body (e.g. /v1/auth/login): try both URI-based and empty-body hashes
     let hash = {
         let mut hasher = Sha256::new();
         if body_bytes.is_empty() {
@@ -190,6 +191,15 @@ pub fn verify_request(
         }
         hasher.update(timestamp_str.as_bytes());
         hasher.finalize()
+    };
+    // Alternative hash for POST with empty body: hash("" + timestamp)
+    let alt_hash = if body_bytes.is_empty() {
+        let mut hasher = Sha256::new();
+        // empty body + timestamp
+        hasher.update(timestamp_str.as_bytes());
+        Some(hasher.finalize())
+    } else {
+        None
     };
 
     // Decode and verify signature
@@ -201,17 +211,30 @@ pub fn verify_request(
     // Mode 2 (XRPL wallets): Crossmark/GemWallet use ripple-keypairs which applies
     //   SHA-512Half(message) before ECDSA. The client passes SHA-256(body+timestamp) as hex,
     //   the wallet internally computes SHA512(hex_bytes)[0..32] and signs that.
-    let mode1_ok = verifying_key.verify_prehash(&hash, &signature).is_ok();
-    let mode2_ok = if !mode1_ok {
-        // SHA-512Half: SHA-512 of the raw hash bytes, take first 32 bytes
-        let sha512_full = Sha512::digest(&hash);
-        let sha512_half: [u8; 32] = sha512_full[..32].try_into().unwrap();
-        verifying_key.verify_prehash(&sha512_half, &signature).is_ok()
+    // Try all applicable hash variants × both signing modes
+    let hashes_to_try: Vec<&[u8]> = if let Some(ref alt) = alt_hash {
+        vec![hash.as_slice(), alt.as_slice()]
     } else {
-        false
+        vec![hash.as_slice()]
     };
 
-    if !mode1_ok && !mode2_ok {
+    let mut verified = false;
+    for h in &hashes_to_try {
+        // Mode 1: direct SHA-256
+        if verifying_key.verify_prehash(h, &signature).is_ok() {
+            verified = true;
+            break;
+        }
+        // Mode 2: SHA-512Half (Crossmark/GemWallet)
+        let sha512_full = Sha512::digest(h);
+        let sha512_half: [u8; 32] = sha512_full[..32].try_into().unwrap();
+        if verifying_key.verify_prehash(&sha512_half, &signature).is_ok() {
+            verified = true;
+            break;
+        }
+    }
+
+    if !verified {
         tracing::debug!(
             hash_hex = %hex::encode(&hash),
             sig_hex = %sig_hex,
