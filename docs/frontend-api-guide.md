@@ -6,104 +6,65 @@
 
 ---
 
-## Getting Started: XRPL Testnet Wallet & Test XRP
+## Getting Started: XRPL Mainnet Wallet & Deposit
 
-To trade on the perp DEX, you need an XRPL keypair (secp256k1). The keypair is used to sign every authenticated request — no session tokens, no cookies.
+To trade on the perp DEX, you need an XRPL keypair (secp256k1). You can sign once to get a session token (recommended for browsers), or sign every request individually.
 
 ### 1. Choose a Wallet
 
-| Wallet | Platform | Testnet support | Recommended for |
-|--------|----------|----------------|-----------------|
-| **Crossmark** | Browser extension (Chrome) | Yes (network selector) | Desktop development, browser signing |
-| **GemWallet** | Browser extension (Chrome) | Yes (network selector) | Alternative to Crossmark |
-| **Xaman (XUMM)** | iOS, Android | Yes (toggle in settings) | Mobile testing |
-| **xrpl.js (code)** | Node.js / Browser | Yes | Automated testing, bots |
-| **`tools/xrpl_auth.py`** | CLI (Python) | Yes | Quick testing from terminal |
+| Wallet | Platform | Recommended for |
+|--------|----------|-----------------|
+| **Crossmark** | Browser extension (Chrome) | Desktop development, browser signing |
+| **GemWallet** | Browser extension (Chrome) | Alternative to Crossmark |
+| **Xaman (XUMM)** | iOS, Android | Mobile |
+| **xrpl.js (code)** | Node.js / Browser | Automated testing, bots |
+| **`tools/xrpl_auth.py`** | CLI (Python) | Quick testing from terminal |
 
-### 2. Setup Crossmark for Testnet
+### 2. Setup Crossmark
 
 1. Install Crossmark extension from [Chrome Web Store](https://chromewebstore.google.com/detail/crossmark/oiobfgfhicfobpfiihoofajlkbgemdal)
 2. Create or import a wallet
-3. Click the network name in top-left corner
-4. Select **"Testnet"** from the dropdown
-5. Your address switches to Testnet automatically
+3. Ensure **Mainnet** is selected (top-left network selector)
 
-### 3. Setup GemWallet for Testnet
+### 3. Setup GemWallet
 
 1. Install GemWallet from [Chrome Web Store](https://chromewebstore.google.com/detail/gemwallet/egebedonbdapoieeigaobedekpfoelld)
 2. Create a wallet
-3. Open Settings → Network → select **Testnet**
+3. Ensure Settings → Network is set to **Mainnet**
 
-### 4. Setup Xaman (XUMM) for Testnet
+### 4. Setup Xaman (XUMM)
 
 1. Install Xaman from App Store / Google Play
-2. Open app → Settings (gear icon) → **Advanced** → **Node**
-3. Tap **"Add custom node"**
-4. Enter: `wss://s.altnet.rippletest.net:51233`
-5. Name: `XRPL Testnet`
-6. Save and select this node as active
-7. Create a new account (the app generates a keypair)
-8. Copy your r-address from the main screen
+2. Default network is Mainnet — no changes needed
+3. Create or import an account
+4. Copy your r-address from the main screen
 
-### 5. Get Test XRP (Faucet)
+### 5. Deposit XRP to Trade
 
-Test XRP is free and has no real value. Get it from the official XRPL Testnet faucet.
+Before trading, deposit XRP to the DEX escrow account. The escrow is protected by a **2-of-3 SGX multisig** (`SignerListSet`) — no single operator can move funds.
 
-**Web faucet (click "Generate Testnet credentials"):**
+**Escrow address (XRPL Mainnet):**
 ```
-https://faucet.altnet.rippletest.net/accounts
+r4rwwSM9PUu7VcvPRWdu9pmZpmhCZS9mmc
 ```
 
-**Fund an existing address via API:**
-```bash
-curl -X POST https://faucet.altnet.rippletest.net/accounts \
-  -H "Content-Type: application/json" \
-  -d '{"destination": "rYOUR_ADDRESS_HERE"}'
-```
+Send a standard XRPL Payment (native XRP) to this address. The orchestrator monitors the ledger and credits your margin automatically — no API call needed from your side.
+
+**Via Crossmark/GemWallet/Xaman:** Send a payment to `r4rwwSM9PUu7VcvPRWdu9pmZpmhCZS9mmc` from your wallet UI.
 
 **Via xrpl.js:**
 ```javascript
-import { Client } from 'xrpl';
-const client = new Client('wss://s.altnet.rippletest.net:51233');
+import { Client, Wallet, Payment } from 'xrpl';
+const client = new Client('wss://xrplcluster.com');
 await client.connect();
-const { wallet, balance } = await client.fundWallet();
-console.log('Address:', wallet.address);
-console.log('Secret:', wallet.seed);
-console.log('Balance:', balance, 'XRP');
-```
-
-**Via CLI tool (included in repo):**
-```bash
-python3 tools/xrpl_auth.py --generate
-# Output: {"seed": "spXXX...", "address": "rXXX...", "public_key": "03..."}
-```
-
-Each faucet call gives ~1000 XRP. You can call it multiple times.
-
-### 6. Verify Your Setup
-
-Check your Testnet balance on the explorer:
-```
-https://testnet.xrpl.org/accounts/rYOUR_ADDRESS_HERE
-```
-
-Or via XRPL JSON-RPC:
-```bash
-curl -s -X POST https://s.altnet.rippletest.net:51234/ \
-  -H "Content-Type: application/json" \
-  -d '{"method":"account_info","params":[{"account":"rYOUR_ADDRESS_HERE"}]}' \
-  | python3 -m json.tool | grep Balance
-```
-
-### 7. Deposit to Trade
-
-Before trading, deposit margin to the DEX escrow account. The escrow account address is managed by 2-of-3 SGX multisig operators.
-
-```bash
-# Deposit via API (the API credits your margin in the SGX enclave)
-python3 tools/xrpl_auth.py --secret spXXX... \
-  --request POST https://api-perp.ph18.io/v1/deposit \
-  '{"user_id":"rYOUR_ADDRESS","amount":"500.00000000","xrpl_tx_hash":"<your_deposit_tx_hash>"}'
+const wallet = Wallet.fromSeed('sYOUR_SECRET');
+const tx = await client.submitAndWait({
+  TransactionType: 'Payment',
+  Account: wallet.address,
+  Destination: 'r4rwwSM9PUu7VcvPRWdu9pmZpmhCZS9mmc',
+  Amount: '100000000', // 100 XRP in drops
+}, { wallet });
+console.log('Deposited:', tx.result.hash);
 ```
 
 After deposit, check your balance:
@@ -112,12 +73,24 @@ python3 tools/xrpl_auth.py --secret spXXX... \
   --request GET "https://api-perp.ph18.io/v1/account/balance?user_id=rYOUR_ADDRESS"
 ```
 
+### 6. Verify Your Setup
+
+Check your balance on the XRPL Mainnet explorer:
+```
+https://livenet.xrpl.org/accounts/rYOUR_ADDRESS_HERE
+```
+
+Verify the escrow multisig:
+```
+https://livenet.xrpl.org/accounts/r4rwwSM9PUu7VcvPRWdu9pmZpmhCZS9mmc
+```
+
 ### Important Notes
 
-- **Testnet resets periodically** — XRPL Testnet is reset every few months. All accounts and history are wiped. This is normal.
-- **Test XRP has no value** — do not send real XRP to Testnet addresses.
+- **Real XRP** — this is XRPL Mainnet. Deposits use real XRP. Start with small amounts.
 - **Reserve requirement** — each XRPL account needs minimum 10 XRP base reserve.
-- **XRPL Explorer** — view any transaction at `https://testnet.xrpl.org/`
+- **Auto-detection** — deposits are detected automatically (1s scan interval). No manual API call needed.
+- **XRPL Explorer** — view any transaction at `https://livenet.xrpl.org/`
 - **Signing** — the DEX uses secp256k1 ECDSA signatures (same curve as XRPL). All wallets above support this natively.
 
 ---
@@ -178,13 +151,28 @@ python3 tools/xrpl_auth.py --secret spXXX... \
 
 ## Authentication
 
-All trading endpoints (orders, balance, cancel) require XRPL signature authentication.
+All trading endpoints (orders, balance, cancel) require authentication. Two methods are available:
 
-### How it works
+1. **Session token (recommended for browsers):** Sign once → get a Bearer token valid 30 min → use `Authorization: Bearer <token>` on all requests.
+2. **Per-request signing:** Sign every request with 4 XRPL headers.
+
+### Method 1: Session Token (recommended)
+
+```
+POST /v1/auth/login
+Headers: X-XRPL-Address, X-XRPL-PublicKey, X-XRPL-Signature, X-XRPL-Timestamp
+Body: empty
+
+Response: { "status": "success", "token": "uuid...", "expires_in": 1800, "address": "rXXX" }
+```
+
+Then use `Authorization: Bearer <token>` on all subsequent requests. No more signing needed until the token expires (30 min).
+
+### Method 2: Per-request signing
 
 1. You have an XRPL secp256k1 keypair (seed → private key + public key → r-address)
 2. For each request, you sign the request body (POST) or URI path (GET) with your private key
-3. You send 3 extra headers with every authenticated request
+3. You send 4 headers with every authenticated request
 
 ### Headers
 

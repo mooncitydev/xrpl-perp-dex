@@ -39,7 +39,13 @@ SGX Enclave :9088 (localhost)       ← private keys, margin engine, signing
 These are the **Orchestrator** endpoints that users/frontends call.
 The Orchestrator handles auth, orderbook matching, and proxies state queries to the Enclave internally.
 
-### Trading (require XRPL signature auth)
+### Authentication
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/v1/auth/login` | Sign once → get Bearer token (30 min TTL). Recommended for browsers. |
+
+### Trading (require XRPL signature auth OR Bearer token)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -48,7 +54,7 @@ The Orchestrator handles auth, orderbook matching, and proxies state queries to 
 | DELETE | `/v1/orders?user_id=rXXX` | Cancel all user's orders |
 | DELETE | `/v1/orders/{order_id}` | Cancel specific order |
 | GET | `/v1/account/balance?user_id=rXXX` | Balance, positions, unrealized PnL |
-| POST | `/v1/withdraw` | Withdraw RLUSD to XRPL address (margin check + SGX signing) |
+| POST | `/v1/withdraw` | Withdraw XRP to XRPL address (margin check + SGX signing) |
 
 ### Market data (no auth)
 
@@ -162,8 +168,13 @@ cargo build --release
 ./target/release/perp-dex-orchestrator \
   --enclave-url https://localhost:9088/v1 \
   --api-listen 127.0.0.1:3000 \
-  --xrpl-url https://s.altnet.rippletest.net:51234 \
-  --priority 0
+  --xrpl-url https://s1.ripple.com:51234 \
+  --escrow-address r4rwwSM9PUu7VcvPRWdu9pmZpmhCZS9mmc \
+  --database-url 'postgres://perp:perp_dex_2026@localhost/perp_dex' \
+  --signers-config /path/to/multisig_escrow_mainnet.json \
+  --priority 0 \
+  --vault-mm \
+  --vault-dn
 ```
 
 Key flags:
@@ -171,8 +182,13 @@ Key flags:
 |------|-------|-------------|
 | `--enclave-url` | `https://localhost:9088/v1` | **Must point to the enclave, NOT the orchestrator** |
 | `--api-listen` | `127.0.0.1:3000` | Bind to localhost only (nginx proxies to it) |
+| `--xrpl-url` | `https://s1.ripple.com:51234` | XRPL Mainnet JSON-RPC endpoint |
+| `--escrow-address` | `r4rwwSM9PUu7VcvPRWdu9pmZpmhCZS9mmc` | XRPL escrow (2-of-3 multisig) to monitor for deposits |
+| `--database-url` | `postgres://...` | PostgreSQL for trade replication |
+| `--signers-config` | path to JSON | Signer enclave URLs + keys for multisig withdrawals |
 | `--priority` | `0` | Sequencer election priority (0=leader, 1-2=validators) |
-| `--escrow-address` | `rXXX...` | XRPL escrow account to monitor for deposits |
+| `--vault-mm` | (flag) | Enable Market Making vault (automated CLOB liquidity) |
+| `--vault-dn` | (flag) | Enable Delta Neutral vault (hedged quoting) |
 
 ### Step 3: Configure nginx
 
