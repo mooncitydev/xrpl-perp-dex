@@ -113,13 +113,27 @@ impl XrplMonitor {
                     &tx["Amount"]
                 };
 
-            // We only handle issued currency (object), skip XRP-only payments
-            let value = match amount.as_object() {
-                Some(obj) => match obj.get("value").and_then(|v| v.as_str()) {
+            // Handle both issued currency (RLUSD) and native XRP (drops string)
+            let value = if let Some(obj) = amount.as_object() {
+                // Issued currency: {"value": "100.50", "currency": "...", "issuer": "..."}
+                match obj.get("value").and_then(|v| v.as_str()) {
                     Some(v) => v.to_string(),
                     None => continue,
-                },
-                None => continue,
+                }
+            } else if let Some(drops_str) = amount.as_str() {
+                // Native XRP: amount in drops as string (1 XRP = 1,000,000 drops)
+                let drops: u64 = match drops_str.parse() {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                let xrp = drops as f64 / 1_000_000.0;
+                format!("{:.8}", xrp)
+            } else if let Some(drops_num) = amount.as_u64() {
+                // Native XRP: amount in drops as number
+                let xrp = drops_num as f64 / 1_000_000.0;
+                format!("{:.8}", xrp)
+            } else {
+                continue;
             };
 
             // Parse amount directly as string to avoid f64 precision loss
