@@ -3,9 +3,11 @@ server {
     listen 80;
 
     location /v1/orders           { proxy_pass http://orchestrator:3000; }
+    location /v1/positions/       { proxy_pass http://orchestrator:3000; }
     location /v1/account/         { proxy_pass http://orchestrator:3000; }
     location /v1/markets/         { proxy_pass http://orchestrator:3000; }
     location /v1/markets          { proxy_pass http://orchestrator:3000; }
+    location /v1/auth/            { proxy_pass http://orchestrator:3000; }
     location /v1/openapi.json     { proxy_pass http://orchestrator:3000; }
     location /v1/attestation/     { proxy_pass http://orchestrator:3000; }
     location /v1/withdraw         { proxy_pass http://orchestrator:3000; }
