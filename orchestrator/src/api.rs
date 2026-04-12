@@ -782,13 +782,14 @@ async fn close_position(
             .into_response();
         }
     };
+    // The enclave only returns currently-open positions in the balance response
+    // (closed positions are removed from the array), so an ownership check is
+    // sufficient — there's no `status` field to check.
     let owns_position = balance["data"]["positions"]
         .as_array()
         .map(|arr| {
-            arr.iter().any(|p| {
-                p.get("position_id").and_then(|v| v.as_u64()) == Some(position_id)
-                    && p.get("status").and_then(|v| v.as_str()) == Some("open")
-            })
+            arr.iter()
+                .any(|p| p.get("position_id").and_then(|v| v.as_u64()) == Some(position_id))
         })
         .unwrap_or(false);
     if !owns_position {
