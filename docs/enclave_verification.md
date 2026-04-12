@@ -10,7 +10,7 @@ This is the SHA-256 hash of the code running inside the SGX enclave, computed by
 
 ## Enclave Binary
 
-The signed enclave binary (`enclave.signed.so`) is published in the [xrpl-perp-dex-enclave](https://github.com/77ph/xrpl-perp-dex-enclave) repository.
+The signed enclave binary (`enclave.signed.so`) is published in the root of this repository.
 
 File hash (SHA-256):
 ```
@@ -19,18 +19,13 @@ File hash (SHA-256):
 
 ## How to Verify
 
-1. Clone the enclave repository:
+1. Verify the file hash:
 ```bash
-git clone https://github.com/77ph/xrpl-perp-dex-enclave.git
-```
-
-2. Verify the file hash:
-```bash
-sha256sum xrpl-perp-dex-enclave/EthSignerEnclave/enclave.signed.so
+sha256sum enclave.signed.so
 # Expected: 30cf9331311775e7a930051fb4bd37838b9e0eb1033377e7c20e971a1b418d95
 ```
 
-3. Extract MRENCLAVE from the binary (requires Intel SGX SDK):
+2. Extract MRENCLAVE from the binary (requires Intel SGX SDK):
 ```bash
 sgx_sign dump -enclave enclave.signed.so -dumpfile /dev/stdout 2>/dev/null \
   | grep -A2 'enclave_hash.m' \
@@ -41,6 +36,6 @@ sgx_sign dump -enclave enclave.signed.so -dumpfile /dev/stdout 2>/dev/null \
 # Expected: 48dc7f6ce749077653d7dac1597016b20f4e4c08cbec859973adbd8f2575a09b
 ```
 
-4. Compare the extracted MRENCLAVE with the value returned by remote attestation at [xperp.fi/verify](https://xperp.fi/verify).
+3. Compare the extracted MRENCLAVE with the value returned by remote attestation at [xperp.fi/verify](https://xperp.fi/verify).
 
 If they match, the enclave is running authentic, unmodified code.
