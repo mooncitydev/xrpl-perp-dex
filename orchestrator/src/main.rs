@@ -46,6 +46,11 @@ struct Cli {
     #[arg(long, default_value = "https://localhost:9088/v1")]
     enclave_url: String,
 
+    /// Accept invalid / self-signed TLS certificates for enclave HTTP (dev only).
+    /// Default is strict verification — do not enable in production.
+    #[arg(long, default_value_t = false)]
+    enclave_insecure_tls: bool,
+
     /// XRPL JSON-RPC URL
     #[arg(long, default_value = "https://s.altnet.rippletest.net:51234")]
     xrpl_url: String,
@@ -228,8 +233,8 @@ async fn main() -> Result<()> {
     };
 
     // Initialize clients
-    let perp = PerpClient::new(&cli.enclave_url)?;
-    let perp_for_api = PerpClient::new(&cli.enclave_url)?;
+    let perp = PerpClient::new(&cli.enclave_url, cli.enclave_insecure_tls)?;
+    let perp_for_api = PerpClient::new(&cli.enclave_url, cli.enclave_insecure_tls)?;
     let monitor = XrplMonitor::new(&cli.xrpl_url, &escrow_address);
     let http_client = reqwest::Client::new();
 
@@ -294,7 +299,7 @@ async fn main() -> Result<()> {
 
     let app_state = Arc::new(AppState {
         engine,
-        perp: PerpClient::new(&cli.enclave_url)?,
+        perp: PerpClient::new(&cli.enclave_url, cli.enclave_insecure_tls)?,
         ws_tx: ws_tx.clone(),
         is_sequencer: is_sequencer.clone(),
         mark_price: mark_price.clone(),
@@ -304,6 +309,7 @@ async fn main() -> Result<()> {
         escrow_address: escrow_address.clone(),
         signers_config,
         db: db.clone(),
+        enclave_insecure_tls: cli.enclave_insecure_tls,
     });
 
     // Start API server
@@ -413,7 +419,7 @@ async fn main() -> Result<()> {
 
     // Validator: replay received batches from sequencer via P2P
     let is_seq_validator = is_sequencer.clone();
-    let validator_perp = PerpClient::new(&cli.enclave_url)?;
+    let validator_perp = PerpClient::new(&cli.enclave_url, cli.enclave_insecure_tls)?;
     let validator_db = app_state.db.clone();
     let _validator_handle = tokio::spawn(async move {
         let mut last_seq: u64 = 0;

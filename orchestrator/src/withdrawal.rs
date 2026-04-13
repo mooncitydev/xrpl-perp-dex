@@ -121,6 +121,7 @@ pub async fn process_withdrawal(
     escrow_address: &str,
     signers_config: &SignersConfig,
     req: &WithdrawRequest,
+    enclave_insecure_tls: bool,
 ) -> Result<WithdrawResult> {
     info!(
         user = %req.user_id,
@@ -206,10 +207,11 @@ pub async fn process_withdrawal(
     );
 
     // Step 4: Collect signatures from quorum signers
-    let http = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true) // self-signed TLS on enclaves
-        .build()
-        .context("failed to build HTTP client")?;
+    let http = crate::perp_client::build_enclave_http_client(
+        enclave_insecure_tls,
+        std::time::Duration::from_secs(30),
+    )
+    .context("failed to build HTTP client")?;
 
     let mut collected_signers: Vec<serde_json::Value> = Vec::new();
 

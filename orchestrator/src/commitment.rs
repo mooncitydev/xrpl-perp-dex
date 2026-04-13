@@ -58,6 +58,7 @@ pub async fn sign_commitment(
     session_key: &str,
     root_hex: &str,
     snapshot_hash_hex: &str,
+    enclave_insecure_tls: bool,
 ) -> Result<(String, String, u8)> {
     use sha3::{Digest, Keccak256};
 
@@ -70,10 +71,10 @@ pub async fn sign_commitment(
     let digest = hasher.finalize();
     let hash_hex = format!("0x{}", hex::encode(digest));
 
-    let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .timeout(std::time::Duration::from_secs(30))
-        .build()?;
+    let client = crate::perp_client::build_enclave_http_client(
+        enclave_insecure_tls,
+        std::time::Duration::from_secs(30),
+    )?;
 
     let resp = client
         .post(format!("{}/pool/sign", enclave_url))

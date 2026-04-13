@@ -54,6 +54,8 @@ pub struct AppState {
     pub signers_config: Option<crate::withdrawal::SignersConfig>,
     /// PostgreSQL for history (optional — trading works without it)
     pub db: Option<crate::db::Db>,
+    /// When true, skip TLS verification for enclave HTTP (see `--enclave-insecure-tls`).
+    pub enclave_insecure_tls: bool,
 }
 
 // ── Request/Response types ──────────────────────────────────────
@@ -223,11 +225,22 @@ async fn attestation_quote(
             .replace("/perp", "")
     );
 
-    let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .unwrap();
+    let client = match crate::perp_client::build_enclave_http_client(
+        state.enclave_insecure_tls,
+        std::time::Duration::from_secs(60),
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "status": "error",
+                    "message": format!("failed to build HTTP client: {}", e)
+                })),
+            )
+                .into_response();
+        }
+    };
 
     match client
         .post(format!(
@@ -1025,6 +1038,7 @@ async fn withdraw(
         &state.escrow_address,
         &signers,
         &req,
+        state.enclave_insecure_tls,
     )
     .await
     {
