@@ -468,6 +468,55 @@ Build happens on the SGX server in HW mode (`make SGX_MODE=HW SGX_DEBUG=1`), bec
 
 ---
 
+## Part 9 — Portability to Intel TDX (forward-looking)
+
+**This section exists because the question will be asked — by a PM, an investor, or a security reviewer — and the wrong answer is dangerous. The right answer has two parts that must always be said together: "yes it's possible given serious engineering" AND "no it cannot be done as a shortcut, and naively porting the code destroys every security guarantee we currently have".**
+
+### Q: Could the same perp-DEX logic run inside Intel TDX instead of SGX?
+
+Yes — given a dedicated engineering project with proper scope, time, and funding. The algorithmic core of `Enclave.cpp` (FROST, MuSig2, ECDSA, the margin engine, `PerpState`, the account pool) is roughly 80-90% portable C/C++ code that does not depend on SGX semantics. Those routines would compile unchanged inside a TDX guest. In some respects TDX is *easier* to work with than SGX: real `pthreads`, real libc, real filesystem, real networking inside the trust domain, no EPC eviction penalty, and live TD migration between hosts (TDX 1.5+).
+
+**But this is absolutely not a "recompile and ship" exercise, and any attempt to treat it as such would de-facto destroy all security guarantees we currently have.** That point is non-negotiable and the rest of this section explains why.
+
+### Q: What would a TDX version with *equivalent* security guarantees actually require?
+
+It is a multi-month engineering project, significantly larger than the SGX work that's already been done. The minimum scope:
+
+1. **Minimal, hardened, reproducibly-built guest image.** In SGX, the trusted base is ~5k lines of `Enclave.cpp` plus the carefully audited `sgx_tstdlib`. In TDX, the trusted base is the *entire* guest VM — kernel + libc + everything running inside. To keep the TCB small enough to be auditable, the guest image has to be built from scratch as a minimal Linux distribution: monolithic kernel with no loadable modules, no `/bin/sh`, no `sshd`, no `systemd`, no package manager, no userland beyond a single statically-linked binary as PID 1, seccomp-bpf default-deny, no listening network ports except a single vsock channel, all of this built reproducibly (NixOS or Buildroot) so the measurement is deterministic. **Building this image and auditing it to the same standard as the SGX enclave is the single largest piece of work — it is a project of its own, not a side task.** If this step is skipped or done carelessly, the guest contains a normal Linux userland with normal attack surface and **the entire confidentiality argument collapses** — you'd be cryptographically protecting a machine that a hostile operator can trivially rootkit from the inside. This is the exact failure mode of "just run the Docker image inside TDX" pitches.
+
+2. **Replacement for the sealing layer.** SGX provides `sgx_seal_data` / `sgx_unseal_data` with built-in MRENCLAVE/MRSIGNER-bound key derivation and a well-understood migration story (our Part 6). TDX has analogous primitives (`MR_SEAL`-family, or remote-KMS-keyed-to-TD-quote patterns), but they are *different* primitives with different key-derivation semantics, different measurement chains (MRTD + RTMR instead of MRENCLAVE), and a different operational model. **Our entire Part 6 migration story has to be rewritten from scratch for TDX** — not conceptually reinvented, but redone against the new measurement hierarchy. Skipping this and using any ad-hoc persistence (e.g. "just encrypt a file with a hardcoded key") would again destroy the guarantee, because now state can be forked, replayed, or extracted by anyone who once got a copy of the TD image.
+
+3. **Replacement for the ECALL/OCALL boundary.** There are no ecalls in TDX. The narrow, auditable attack surface that `Enclave.edl` gives us has to be reconstructed as an explicit RPC protocol (e.g. Protobuf over vsock) with equally strict validation, fuzzing, and a single entry point. **If this boundary is not designed and audited as carefully as the EDL is today**, it becomes the new weak link — an over-broad gRPC surface or a sloppy parser inside the TD is just as dangerous as a bug in the enclave, and has the same blast radius.
+
+4. **Replacement for the attestation pipeline.** TDX quotes are DCAP-verifiable (same verification infrastructure as SGX, different quote format), but the client-side verifier, the quote-retrieval endpoint, and the release-signing pipeline all need TDX-specific code paths. The `deployment-procedure.md` ceremony survives in structure (FROST 2-of-3 signs a release manifest whose hash is the TD's MRTD instead of an enclave's MRENCLAVE), but every tool in the chain needs a TDX backend.
+
+5. **Rewritten threat model and audit pass.** The trust boundary is moving from "one process" to "one VM". Every assumption in our current threat model has to be re-examined: host-hypervisor interactions, IOMMU protection, TD-to-TD isolation, guest-kernel exposure, live-migration trust, microcode rollback semantics. This is **not** a documentation exercise — it is a real security audit with real effort, and it has to be budgeted.
+
+6. **A `TeeBackend` abstraction in the code.** Every call to `sgx_seal_data`, `sgx_unseal_data`, `sgx_read_rand`, `sgx_sha*`, `sgx_create_report`, `sgx_thread_mutex` etc. has to be wrapped behind a TEE-agnostic interface with SGX and TDX implementations. This is the only part of the port that is actually cheap (~1-2 weeks), but it is load-bearing: without it the rest of the port is a tangled rewrite instead of a clean backend swap. **This is also the only piece worth doing speculatively on the SGX side today**, even before any TDX funding exists, because it is inexpensive and it makes any future port tractable.
+
+A realistic schedule for items 1-5 executed *seriously* is on the order of **4-5 months of a senior engineer's full attention, or 2-3 months for a two-engineer team**, plus an independent security audit on top. That is a genuine project, not a sprint.
+
+### Q: Can we just run the code in a TD today without doing all of this?
+
+Physically, yes. *Securely*, **no — and it must be called out unambiguously**. A TDX guest launched from a stock Debian or Ubuntu image with our binary dropped in, SSH enabled, a normal init system, and ad-hoc file-based storage would *technically* be a confidential VM — the hypervisor cannot read its memory. But:
+
+- Any compromise inside the guest (via ssh, via an unpatched package, via a privileged daemon, via the network surface of the guest OS itself) exfiltrates the signing key just as effectively as a compromise of the host would have, because **the entire guest userland is inside the trust boundary and none of it has been audited to the standard required**.
+- State persistence without a proper TDX sealing or KMS-attested design means state can be copied, replayed, or tampered with between TD launches.
+- Attestation without a narrow measurement scheme means a user has no cryptographic way to distinguish "the TD I'm supposed to trust" from "a TD launched from the same image with a backdoor added to the userland before boot".
+- The side-channel story does not improve, but the size of the code that can be exploited by a side-channel goes up by orders of magnitude.
+
+**This is the critical point to communicate to any stakeholder asking about TDX:** the security properties of a TEE do not come from the hardware alone — they come from the hardware *combined with* a disciplined engineering effort to keep the trusted base small, measured, and auditable. SGX *forces* that discipline because the enclave model is so restrictive; TDX *permits* that discipline but does not enforce it, and the failure mode is silent — "it runs, therefore it's secure" is a trap. A TDX deployment that skipped items 1-5 would look like a working system and would de-facto provide **less** security than our current SGX deployment, not more.
+
+### Q: So what is our actual position today?
+
+- **We are on SGX and will stay on SGX** until and unless a dedicated TDX migration project is properly funded and scoped.
+- **Without TDX funding, TDX is unreachable as a product.** Not because it's technically impossible — it's not — but because doing it half-way is worse than not doing it at all, and doing it properly is a 4-5 month engineering investment with its own audit.
+- **A TDX version, if built, must deliver equivalent security guarantees to the current SGX version, not "TDX-style" guarantees.** Same threat model, same attestation story, same migration story, same small-and-auditable trusted base. Anything less is not an alternative to SGX — it's a regression dressed in newer hardware.
+- **The one thing worth doing today, independent of TDX funding, is introducing a `TeeBackend` abstraction** in the enclave code so that any future port becomes a backend addition rather than a rewrite. This is cheap, it doesn't block current work, and it's good engineering hygiene on its own.
+- **If an investor specifically wants TDX**, the right conversation is "yes, here is the scoped project and the budget", not "sure, we can flip a flag". The scoped project is what this section describes.
+
+---
+
 ## Appendix A — One-line glossary
 
 - **EPC** — Enclave Page Cache, the physically reserved region of RAM where enclave pages live.
@@ -483,6 +532,10 @@ Build happens on the SGX server in HW mode (`make SGX_MODE=HW SGX_DEBUG=1`), bec
 - **AESM** — Application Enclave Services Manager, the Intel-shipped daemon on the host that brokers attestation-related operations.
 - **FROST** — Flexible Round-Optimized Schnorr Threshold signatures; our 2-of-3 scheme.
 - **DKG** — Distributed Key Generation; how the FROST shares are created without anyone holding the full key.
+- **TDX** — Intel Trust Domain Extensions; VM-level TEE that protects an entire guest VM instead of a single process. Complementary to SGX, not a drop-in replacement.
+- **TD** — Trust Domain; a single guest VM running under TDX.
+- **MRTD** — Measurement of the TD's initial image (kernel + initrd + firmware); the TDX analogue of MRENCLAVE.
+- **RTMR** — Runtime Measurement Registers; additional TDX measurements extended during guest boot.
 
 ## Appendix B — Cross-references
 
