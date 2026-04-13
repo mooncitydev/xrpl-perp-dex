@@ -3,8 +3,24 @@
 //! Rewrite of `perp_client.py`. All amounts are strings in FP8 format
 //! (e.g., "100.50000000").
 
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 use serde_json::Value;
+
+/// Build an HTTP client for enclave / pool endpoints.
+///
+/// By default TLS certificates are verified. Set `insecure_tls` only for
+/// development against self-signed enclave certificates (never in production).
+pub fn build_enclave_http_client(insecure_tls: bool, timeout: Duration) -> Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder().timeout(timeout);
+    if insecure_tls {
+        builder = builder.danger_accept_invalid_certs(true);
+    }
+    builder
+        .build()
+        .context("failed to build reqwest client for enclave")
+}
 
 /// Client for the Perp DEX enclave REST API at `/v1/perp/*`.
 pub struct PerpClient {
@@ -13,13 +29,10 @@ pub struct PerpClient {
 }
 
 impl PerpClient {
-    /// Create a new client. TLS verification is disabled (self-signed cert).
-    pub fn new(base_url: &str) -> Result<Self> {
-        let client = reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .context("failed to build reqwest client")?;
+    /// Create a new client. Pass `insecure_tls: true` only if the enclave uses a
+    /// self-signed TLS certificate (e.g. local dev); production should use proper certs.
+    pub fn new(base_url: &str, insecure_tls: bool) -> Result<Self> {
+        let client = build_enclave_http_client(insecure_tls, Duration::from_secs(30))?;
 
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
